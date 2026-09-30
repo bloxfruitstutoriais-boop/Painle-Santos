@@ -1,0 +1,62 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+// CORRIGIDO: a assinatura do release vem de propriedades/variáveis de ambiente;
+// nenhuma senha ou keystore fica gravada no repositório.
+def signingValue = { String name ->
+    providers.gradleProperty(name)
+            .orElse(providers.environmentVariable(name))
+            .orNull
+}
+def releaseStoreFile = signingValue('RELEASE_STORE_FILE')
+def releaseStorePassword = signingValue('RELEASE_STORE_PASSWORD')
+def releaseKeyAlias = signingValue('RELEASE_KEY_ALIAS')
+def releaseKeyPassword = signingValue('RELEASE_KEY_PASSWORD')
+def releaseSigningReady = [releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword]
+        .every { it != null && !it.toString().trim().isEmpty() }
+
+android { namespace 'painel.sensi.santos'; compileSdk 35
+    defaultConfig { applicationId 'painel.sensi.santos'; minSdk 29; targetSdk 35; versionCode 9; versionName '1.0.8' }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    kotlinOptions { jvmTarget = '17' }
+    signingConfigs {
+        // CORRIGIDO: debug fica explicitamente assinado pela chave debug do Android.
+        // Compatibilidade adicional com instaladores Samsung: mantém v1 e v2.
+        debug {
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+        if (releaseSigningReady) {
+            // CORRIGIDO: só cria a configuração release quando os quatro segredos existem.
+            release {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+    buildTypes {
+        // CORRIGIDO: debug declarado explicitamente para manter o build instalável.
+        debug {
+            debuggable true
+            signingConfig signingConfigs.debug
+        }
+        release {
+            // CORRIGIDO: release reproduzível; minificação permanece desligada para preservar a lógica original.
+            debuggable false
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // CORRIGIDO: assembleRelease fica assinado quando as propriedades foram fornecidas.
+            if (releaseSigningReady) signingConfig signingConfigs.release
+        }
+    }
+    dependencies {
+        implementation 'dev.rikka.shizuku:api:13.1.5'
+        implementation 'dev.rikka.shizuku:provider:13.1.5'
+        implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+    }
+}

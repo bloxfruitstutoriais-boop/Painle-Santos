@@ -1,0 +1,1324 @@
+diff -ruN /home/user/orig_r12/app/src/main/java/painel/sensi/santos/LicenseKeyInfo.java /home/user/work_r12/app/src/main/java/painel/sensi/santos/LicenseKeyInfo.java
+--- /home/user/orig_r12/app/src/main/java/painel/sensi/santos/LicenseKeyInfo.java	1970-01-01 00:00:00.000000000 +0000
++++ /home/user/work_r12/app/src/main/java/painel/sensi/santos/LicenseKeyInfo.java	2026-09-11 22:37:04.251966120 +0000
+@@ -0,0 +1,46 @@
++package painel.sensi.santos; // CORRIGIDO BUG2: cria um modelo explícito para o estado da key e evita misturar validade com acesso a funções.
++
++/** Modelo imutável da licença calculado em UTC. */ // CORRIGIDO BUG2: documenta os dados usados pela decisão de liberação.
++public final class LicenseKeyInfo { // CORRIGIDO BUG2: representa a decisão centralizada da licença.
++    public final boolean valid; // CORRIGIDO BUG2: informa se existe sessão válida para esta key.
++    public final boolean expiryKnown; // CORRIGIDO BUG2: diferencia expiração ausente de key expirada.
++    public final boolean expired; // CORRIGIDO BUG2: marca somente uma expiração conhecida com zero dias ou menos.
++    public final boolean trial; // CORRIGIDO BUG2: trata data nula/inválida como acesso de trial, sem usar zero como validade.
++    public final boolean fullAccess; // CORRIGIDO BUG2: fica true exclusivamente quando diasRestantes >= 7.
++    public final Long daysRemaining; // CORRIGIDO BUG2: mantém null para data desconhecida e evita interpretar null como zero.
++    public final long expiresAtMillis; // CORRIGIDO BUG2: guarda a data UTC em epoch para recalcular sempre.
++    public final long currentAtMillis; // CORRIGIDO BUG2: registra o instante usado no cálculo.
++    public final String currentUtc; // CORRIGIDO BUG2: expõe dataAtual em UTC para diagnóstico.
++    public final String expirationUtc; // CORRIGIDO BUG2: expõe dataExpiracao em UTC para diagnóstico.
++    public final String releaseResult; // CORRIGIDO BUG2: texto da decisão usada pela UI/Logcat.
++
++    public LicenseKeyInfo( // CORRIGIDO BUG2: recebe todos os campos de decisão sem inferências na UI.
++            boolean valid, // CORRIGIDO BUG2: preserva a validade da sessão.
++            boolean expiryKnown, // CORRIGIDO BUG2: informa se o servidor entregou uma data utilizável.
++            boolean expired, // CORRIGIDO BUG2: informa expiração real.
++            boolean trial, // CORRIGIDO BUG2: informa fallback seguro para data ausente.
++            boolean fullAccess, // CORRIGIDO BUG2: informa liberação total a partir de sete dias.
++            Long daysRemaining, // CORRIGIDO BUG2: dias restantes calculados, não um valor de servidor obsoleto.
++            long expiresAtMillis, // CORRIGIDO BUG2: expiração em epoch UTC.
++            long currentAtMillis, // CORRIGIDO BUG2: instante de cálculo em epoch UTC.
++            String currentUtc, // CORRIGIDO BUG2: representação legível da data atual.
++            String expirationUtc, // CORRIGIDO BUG2: representação legível da expiração.
++            String releaseResult) { // CORRIGIDO BUG2: descrição auditável do resultado.
++        this.valid = valid; // CORRIGIDO BUG2: inicializa o estado de sessão.
++        this.expiryKnown = expiryKnown; // CORRIGIDO BUG2: inicializa o indicador de data.
++        this.expired = expired; // CORRIGIDO BUG2: inicializa a expiração.
++        this.trial = trial; // CORRIGIDO BUG2: inicializa o fallback trial.
++        this.fullAccess = fullAccess; // CORRIGIDO BUG2: inicializa a liberação total.
++        this.daysRemaining = daysRemaining; // CORRIGIDO BUG2: mantém null quando não há data.
++        this.expiresAtMillis = expiresAtMillis; // CORRIGIDO BUG2: salva a expiração UTC.
++        this.currentAtMillis = currentAtMillis; // CORRIGIDO BUG2: salva o instante de cálculo.
++        this.currentUtc = currentUtc == null ? "indisponível" : currentUtc; // CORRIGIDO BUG2: evita texto nulo na UI.
++        this.expirationUtc = expirationUtc == null ? "não informada" : expirationUtc; // CORRIGIDO BUG2: evita texto nulo na UI.
++        this.releaseResult = releaseResult == null ? "não calculado" : releaseResult; // CORRIGIDO BUG2: evita resultado nulo no diagnóstico.
++    }
++
++    public static LicenseKeyInfo empty(long nowMillis) { // CORRIGIDO BUG2: cria estado seguro sem sessão/cache.
++        return new LicenseKeyInfo(false, false, false, true, false, null, 0L, nowMillis, // CORRIGIDO BUG2: sessão ausente nunca libera recursos restritos.
++                "não calculada", "não informada", "key ausente"); // CORRIGIDO BUG2: mensagem explícita para a UI.
++    }
++}
+diff -ruN /home/user/orig_r12/app/src/main/java/painel/sensi/santos/MainActivity.java /home/user/work_r12/app/src/main/java/painel/sensi/santos/MainActivity.java
+--- /home/user/orig_r12/app/src/main/java/painel/sensi/santos/MainActivity.java	2026-09-11 20:57:20.000000000 +0000
++++ /home/user/work_r12/app/src/main/java/painel/sensi/santos/MainActivity.java	2026-09-11 22:47:17.993132867 +0000
+@@ -24,7 +24,8 @@
+ 
+ public class MainActivity extends android.app.Activity {
+     // ADICIONADO: ação usada pelo X da overlay para abrir a tela de key do zero.
+-    public static final String ACTION_KEY_SCREEN = "painel.sensi.santos.KEY_SCREEN";
++    public static final String ACTION_KEY_SCREEN = "painel.sensi.santos.KEY_SCREEN"; // CORRIGIDO BUG2: mantém a ação existente da tela de key.
++    public static final String EXTRA_LICENSE_KEY = "license_key"; // CORRIGIDO BUG2: entrega a key apenas à sessão ativa do serviço para Revalidar key.
+     private SharedPreferences prefs;
+     private final Handler handler = new Handler();
+     private boolean waitingForOverlay;
+@@ -33,7 +34,8 @@
+     private boolean overlayLaunchScheduled;
+     private long overlayRequestId;
+     // ADICIONADO: impede o splash de validar automaticamente ao voltar do X.
+-    private boolean forceKeyScreen;
++    private boolean forceKeyScreen; // CORRIGIDO BUG2: mantém o fluxo original da tela de key.
++    private String activeLicenseKey = ""; // CORRIGIDO BUG2: permite revalidar sem persistir a key quando o usuário desmarcou Salvar key.
+     // LOG ADICIONADO: request/callback são cancelados no lifecycle da Activity.
+     private LicenseValidator.Request licenseRequest;
+     private LicenseValidator.Callback licenseCallback;
+@@ -169,6 +171,7 @@
+     }
+ 
+     private void verifySavedKey(final String key) {
++        activeLicenseKey = key == null ? "" : key.trim(); // CORRIGIDO BUG2: registra a key somente durante a sessão corrente.
+         cancelLicenseRequest();
+         if (LicenseValidator.hasValidLocalSession(this, key)) {
+             // Sessão local ainda válida: falha de rede não impede a abertura.
+@@ -246,6 +249,7 @@
+                     activate.setEnabled(true);
+                     activate.setText("Ativar painel   ▣");
+                     if (result.valid) {
++                        activeLicenseKey = k; // CORRIGIDO BUG2: disponibiliza a key ao serviço sem depender do cache antigo.
+                         // CORRIGIDO: persistir somente com consentimento explícito da caixa.
+                         boolean shouldSave = saveKey.isChecked();
+                         SharedPreferences.Editor keyEditor = prefs.edit()
+@@ -261,6 +265,7 @@
+                     }
+                 }
+             };
++            activeLicenseKey = k; // CORRIGIDO BUG2: guarda a key apenas em memória para a sessão ativa.
+             licenseRequest = LicenseValidator.verifyOnce(this, k, licenseCallback);
+         });
+         Ui.animatePress(activate);
+@@ -352,7 +357,8 @@
+                 .remove("overlay_error").apply();
+         Intent i = new Intent(this, OverlayService.class)
+                 .setAction(OverlayService.ACTION_OPEN)
+-                .putExtra(OverlayService.EXTRA_REQUEST_ID, requestId);
++                .putExtra(OverlayService.EXTRA_REQUEST_ID, requestId) // CORRIGIDO BUG2: mantém o identificador usado pelo fluxo de abertura.
++                .putExtra(EXTRA_LICENSE_KEY, activeLicenseKey); // CORRIGIDO BUG2: permite o botão Revalidar key sem alterar a opção Salvar key.
+         try {
+             // CORRIGIDO: se o serviço já existe, enviar startService reutiliza a
+             // instância foreground; iniciar outro FGS na reabertura podia causar
+diff -ruN /home/user/orig_r12/app/src/main/java/painel/sensi/santos/OverlayService.java /home/user/work_r12/app/src/main/java/painel/sensi/santos/OverlayService.java
+--- /home/user/orig_r12/app/src/main/java/painel/sensi/santos/OverlayService.java	2026-09-11 21:53:37.000000000 +0000
++++ /home/user/work_r12/app/src/main/java/painel/sensi/santos/OverlayService.java	2026-09-11 22:47:47.969623159 +0000
+@@ -61,7 +61,8 @@
+     public static final String ACTION_SHOW = "painel.sensi.santos.SHOW";
+     public static final String ACTION_HIDE = "painel.sensi.santos.HIDE";
+     public static final String ACTION_STOP = "painel.sensi.santos.STOP";
+-    public static final String EXTRA_REQUEST_ID = "request_id";
++    public static final String EXTRA_REQUEST_ID = "request_id"; // CORRIGIDO BUG1: mantém o identificador de abertura.
++    public static final String EXTRA_LICENSE_KEY = MainActivity.EXTRA_LICENSE_KEY; // CORRIGIDO BUG2: recebe a key ativa para Revalidar key.
+     private static final String CHANNEL = "santos_floating";
+     private static final int NOTIFICATION_ID = 8183;
+     private static final int BUBBLE_SIZE_DP = 54;
+@@ -75,6 +76,8 @@
+     private ImageView bubble;
+     private TextView status;
+     private TextView shizukuStatus;
++    private TextView licenseStatus; // CORRIGIDO BUG2: mostra na overlay os dias restantes calculados.
++    private TextView revalidateKeyButton; // CORRIGIDO BUG2: botão para limpar cache e validar novamente.
+     private TextView fpsStatus;
+     private TextView refreshStatus;
+     private TextView refreshApply;
+@@ -126,6 +129,9 @@
+     private boolean nativeDisplayInfoLoaded;
+     private long nextNativeDisplayInfoAttemptAt;
+     private boolean closeRequested;
++    private String activeLicenseKey = ""; // CORRIGIDO BUG2: mantém a key da sessão sem forçar persistência quando o usuário optou por não salvar.
++    private LicenseKeyInfo licenseInfo; // CORRIGIDO BUG2: snapshot único usado para habilitar/bloquear recursos.
++    private LicenseValidator.Request licenseRequest; // CORRIGIDO BUG2: cancela revalidação quando o serviço morre.
+     private long requestId = -1L;
+     private int lastStartId;
+     // ADICIONADO: impede callback tardio de tocar Views depois de onDestroy.
+@@ -144,6 +150,8 @@
+     private final Map<String, Integer> sliderMaxes = new HashMap<>();
+     private final Map<String, Integer> sliderDefaults = new HashMap<>();
+     private final Map<Integer, TextView> refreshChoices = new HashMap<>();
++    private final Set<TextView> licenseRestrictedButtons = new HashSet<>(); // CORRIGIDO BUG2: lista ações bloqueadas para keys com menos de 7 dias.
++    private final Map<TextView, String> licenseRestrictedLabels = new HashMap<>(); // CORRIGIDO BUG2: restaura o texto original quando a key libera tudo.
+     private final Set<String> unavailableShellFeatures = new HashSet<>();
+     private boolean shellCapabilitiesKnown;
+     private boolean shellCapabilityProbeInProgress;
+@@ -154,7 +162,7 @@
+     // O binder pode morrer depois de o painel já estar aberto. Nesse caso a
+     // ponte é invalidada imediatamente; nenhuma função fica habilitada por
+     // causa de uma autorização antiga em SharedPreferences.
+-    private final Shizuku.OnBinderReceivedListener binderReceivedListener = () ->
++    private final Shizuku.OnBinderReceivedListener binderReceivedListener = () -> // CORRIGIDO BUG1: listener explícito acompanha a chegada do binder durante a vida do serviço.
+             mainHandler.post(() -> {
+                 if (destroyed) return;
+                 Log.d(FLOW_TAG, "OVERLAY_SHIZUKU_BINDER_RECEIVED");
+@@ -240,8 +248,8 @@
+         // A API do Shizuku permite registrar o ciclo de vida mesmo quando o
+         // binder ainda não foi iniciado; o callback só age se ele morrer.
+         try {
+-            Shizuku.addBinderReceivedListenerSticky(binderReceivedListener);
+-            Shizuku.addBinderDeadListener(binderDeadListener);
++            Shizuku.addBinderReceivedListener(binderReceivedListener); // CORRIGIDO BUG1: registra o listener não-sticky no onCreate.
++            Shizuku.addBinderDeadListener(binderDeadListener); // CORRIGIDO BUG1: trata morte do binder sem derrubar a overlay.
+             Shizuku.addRequestPermissionResultListener(permissionResultListener);
+         } catch (RuntimeException error) {
+             Log.e(FLOW_TAG, "OVERLAY_SHIZUKU_LISTENER_REGISTER_FAILED", error); // TRY/CATCH ADICIONADO
+@@ -291,6 +299,13 @@
+             long incomingRequestId = intent.getLongExtra(EXTRA_REQUEST_ID, -1L);
+             if (incomingRequestId > 0L) requestId = incomingRequestId;
+         }
++        if (intent != null && intent.hasExtra(EXTRA_LICENSE_KEY)) { // CORRIGIDO BUG2: atualiza a key ativa sem tocar a UI fora da Main Looper.
++            activeLicenseKey = intent.getStringExtra(EXTRA_LICENSE_KEY); // CORRIGIDO BUG2: recebe somente a sessão corrente.
++            if (activeLicenseKey == null) activeLicenseKey = ""; // CORRIGIDO BUG2: evita NullPointerException no botão de revalidação.
++            activeLicenseKey = activeLicenseKey.trim(); // CORRIGIDO BUG2: normaliza antes de consultar o fingerprint.
++            refreshLicenseInfo(); // CORRIGIDO BUG2: recalcula dias após receber a key.
++            updateCapabilityStates(); // CORRIGIDO BUG2: aplica a regra de 7 dias aos controles.
++        }
+         if (ACTION_STOP.equals(action)) {
+             stopSelfResult(startId);
+             return START_NOT_STICKY;
+@@ -339,6 +354,7 @@
+         closeRequested = true;
+         if (choreographer != null) choreographer.removeFrameCallback(fpsCallback);
+         if (panel != null) panel.animate().cancel();
++        if (licenseRequest != null) { licenseRequest.cancel(); licenseRequest = null; } // CORRIGIDO BUG2: callback de revalidação não toca Views após onDestroy.
+         if (prefs != null && requestId > 0L
+                 && prefs.getLong("overlay_ready_request_id", -1L) == requestId) {
+             prefs.edit().putBoolean("overlay_ready", false)
+@@ -349,8 +365,8 @@
+         // CORRIGIDO: impedir que a Activity considere vivo um serviço destruído.
+         if (activeInstance == this) activeInstance = null;
+         try {
+-            Shizuku.removeBinderReceivedListener(binderReceivedListener);
+-            Shizuku.removeBinderDeadListener(binderDeadListener);
++            Shizuku.removeBinderReceivedListener(binderReceivedListener); // CORRIGIDO BUG1: remove o listener no onDestroy.
++            Shizuku.removeBinderDeadListener(binderDeadListener); // CORRIGIDO BUG1: não deixa callback tocar serviço destruído.
+             Shizuku.removeRequestPermissionResultListener(permissionResultListener);
+         } catch (RuntimeException error) {
+             Log.e(FLOW_TAG, "OVERLAY_SHIZUKU_LISTENER_REMOVE_FAILED", error); // TRY/CATCH ADICIONADO
+@@ -549,13 +565,19 @@
+         LinearLayout sessionCopy = new LinearLayout(this);
+         sessionCopy.setOrientation(LinearLayout.VERTICAL);
+         TextView active = Ui.text(this, "Sessão ativa", 12, Ui.WHITE, true);
+-        TextView keyText = Ui.text(this, "Licença online ativa", 9, Ui.MUTED, false);
+-        keyText.setSingleLine(true);
+-        keyText.setEllipsize(TextUtils.TruncateAt.END);
++        licenseStatus = Ui.text(this, "Licença: calculando dias restantes…", 9, Ui.MUTED, false); // CORRIGIDO BUG2: exibe a validade calculada em UTC.
++        licenseStatus.setSingleLine(true); // CORRIGIDO BUG2: mantém o contador legível no cabeçalho.
++        licenseStatus.setEllipsize(TextUtils.TruncateAt.END); // CORRIGIDO BUG2: evita estourar a largura do painel.
+         sessionCopy.addView(active, lp(-1, Ui.dp(this, 17)));
+-        sessionCopy.addView(keyText, lp(-1, Ui.dp(this, 15)));
++        sessionCopy.addView(licenseStatus, lp(-1, Ui.dp(this, 15))); // CORRIGIDO BUG2: mostra dias restantes ao usuário.
+         session.addView(sessionCopy, lp(0, Ui.dp(this, 32), 1));
++        revalidateKeyButton = Ui.text(this, "Revalidar key", 8, Ui.BRIGHT, true); // CORRIGIDO BUG2: adiciona ação solicitada de revalidação.
++        revalidateKeyButton.setGravity(Gravity.CENTER); // CORRIGIDO BUG2: centraliza o texto do botão.
++        revalidateKeyButton.setBackground(Ui.rounded(0xFF3E1747, 8, this)); // CORRIGIDO BUG2: preserva o estilo do painel.
++        revalidateKeyButton.setOnClickListener(v -> revalidateKey()); // CORRIGIDO BUG2: limpa cache e valida novamente ao tocar.
++        session.addView(revalidateKeyButton, lp(Ui.dp(this, 68), Ui.dp(this, 30))); // CORRIGIDO BUG2: torna o botão acessível no cabeçalho.
+         contentColumn.addView(session, lp(-1, Ui.dp(this, 42)));
++        refreshLicenseInfo(); // CORRIGIDO BUG2: inicializa contador e estado de acesso antes dos controles.
+ 
+         status = Ui.text(this, "Shizuku: aguardando · Overlay: pendente\nÚltimo comando: nenhum · exit code: —", 8, Ui.MUTED, false);
+         // Status primário é deliberadamente compacto; o diagnóstico completo
+@@ -670,9 +692,9 @@
+         section(list, "PROPORÇÃO / ESTICAR TELA");
+         addNotice(list, "Aplicação oficial via shell",
+                 "O slider usa wm size e wm density via Shizuku. O resultado e as barras dependem do firmware.");
+-        resolutionSave = addAction(list, "Salvar resolução/densidade original (Shizuku)",
++        resolutionSave = addRestrictedAction(list, "Salvar resolução/densidade original (Shizuku)", // CORRIGIDO BUG2: ação de sistema fica restrita abaixo de 7 dias.
+                 v -> captureOriginalDisplayState());
+-        resolutionRestore = addAction(list, "Restaurar resolução/densidade original",
++        resolutionRestore = addRestrictedAction(list, "Restaurar resolução/densidade original", // CORRIGIDO BUG2: ação de sistema fica restrita abaixo de 7 dias.
+                 v -> restoreOriginalDisplayState());
+         scroll.addView(list);
+         updateRefreshStatus();
+@@ -711,7 +733,7 @@
+         dpiSelector = spinner(this, densityLabels());
+         addSpinnerRow(list, "Resolução", resolutionSelector);
+         addSpinnerRow(list, "DPI", dpiSelector);
+-        addAction(list, "LER wm size / wm density AGORA", v -> forceReadNativeDisplayInfo());
++        addRestrictedAction(list, "LER wm size / wm density AGORA", v -> forceReadNativeDisplayInfo()); // CORRIGIDO BUG2: leitura remota exige key com 7+ dias.
+         readNativeDisplayInfo();
+ 
+         addSlider(list, "Alongar tela", "stretch_percent", 0, 100, 0,
+@@ -722,7 +744,7 @@
+                 "Desligado por padrão. Aplica o fator selecionado usando a resolução nativa e o DPI real lidos por wm.",
+                 "fullscreen_stretch");
+ 
+-        displayApply = addAction(list, "APLICAR resolução / DPI", v -> {
++        displayApply = addRestrictedAction(list, "APLICAR resolução / DPI", v -> { // CORRIGIDO BUG2: aplicação de display exige key com 7+ dias.
+             // CORRIGIDO: o botão é uma confirmação explícita do fator salvo;
+             // antes ele apenas mostrava uma mensagem quando o switch estava off.
+             if (stretchSlider != null && stretchSlider.getProgress() > 0
+@@ -734,13 +756,13 @@
+             }
+             applyDisplayProfileFromUi();
+         });
+-        displayReset = addAction(list, "RESTAURAR resolução e DPI originais", v -> restoreOriginalDisplayState());
++        displayReset = addRestrictedAction(list, "RESTAURAR resolução e DPI originais", v -> restoreOriginalDisplayState()); // CORRIGIDO BUG2: restauração de display fica restrita abaixo de 7 dias.
+         displayApply.setEnabled(false);
+         displayApply.setAlpha(.52f);
+         displayReset.setEnabled(false);
+         displayReset.setAlpha(.52f);
+         // ADICIONADO: nunca enviar wm overscan quando a capability não foi confirmada.
+-        overscanReset = addAction(list, "RESET OVERSCAN (somente se suportado)", v -> resetOverscan());
++        overscanReset = addRestrictedAction(list, "RESET OVERSCAN (somente se suportado)", v -> resetOverscan()); // CORRIGIDO BUG2: reset remoto fica restrito abaixo de 7 dias.
+         overscanReset.setEnabled(false);
+         overscanReset.setAlpha(.52f);
+     }
+@@ -770,6 +792,10 @@
+     }
+ 
+     private void forceReadNativeDisplayInfo() {
++        if (!hasFullLicense()) { // CORRIGIDO BUG2: botão/caminho remoto não contorna a regra de 7 dias.
++            postMessage(false, "Disponível para keys com 7+ dias"); // CORRIGIDO BUG2: informa o bloqueio em português.
++            return; // CORRIGIDO BUG2: não envia wm size/density para key curta.
++        }
+         if (!ShizukuBridge.hasPermission()) {
+             postMessage(false, "Shizuku não autorizado: wm size/wm density não enviados");
+             return;
+@@ -786,12 +812,11 @@
+ 
+     private void readNativeDisplayInfo(boolean authorized) {
+         if (destroyed) return;
+-        if (!authorized || !bridgeVerified) {
+-            // Uma revogação ou ponte ainda não testada invalida o snapshot
+-            // remoto; nenhuma função dependente é liberada nesse estado.
+-            nativeDisplayInfoLoaded = false;
+-            return;
+-        }
++        if (!authorized || !bridgeVerified || !hasFullLicense()) { // CORRIGIDO BUG2: leitura remota só ocorre com acesso total >=7.
++            nativeDisplayInfoRequested = false; // CORRIGIDO BUG2: permite nova tentativa após a key ser revalidada.
++            nativeDisplayInfoLoaded = false; // CORRIGIDO BUG2: não mantém estado de uma licença anterior.
++            return; // CORRIGIDO BUG2: não consulta display para licença curta.
++        } // CORRIGIDO BUG2: fecha o gate de licença da leitura.
+         if (nativeDisplayInfoRequested || nativeDisplayInfoLoaded) return;
+         if (SystemClock.uptimeMillis() < nextNativeDisplayInfoAttemptAt) return;
+         nativeDisplayInfoRequested = true;
+@@ -802,6 +827,11 @@
+                 nativeDisplayInfoRequested = false;
+                 return;
+             }
++            if (!hasFullLicense()) { // CORRIGIDO BUG2: descarta resposta remota se a licença deixou de liberar recursos.
++                nativeDisplayInfoRequested = false; // CORRIGIDO BUG2: não mantém callback pendente.
++                nativeDisplayInfoLoaded = false; // CORRIGIDO BUG2: remove snapshot fora da faixa de acesso.
++                return; // CORRIGIDO BUG2: não toca Spinners/Views para key curta.
++            } // CORRIGIDO BUG2: fecha o descarte de callback por licença.
+             if (!ok || info == null) {
+                 nativeDisplayInfoRequested = false;
+                 nativeDisplayInfoLoaded = false;
+@@ -1064,9 +1094,10 @@
+                     updateRefreshChoices();
+                     if (refreshApply != null) {
+                         refreshApply.setText("Aplicar modo " + chosen + " Hz");
+-                        boolean authorized = ShizukuBridge.hasPermission() && bridgeVerified;
++                        boolean authorized = ShizukuBridge.hasPermission() && bridgeVerified // CORRIGIDO BUG2: exige binder e ponte técnica.
++                                && licenseInfo != null && licenseInfo.fullAccess; // CORRIGIDO BUG2: seleção de Hz não contorna a regra de 7 dias.
+                         refreshApply.setEnabled(authorized);
+-                        refreshApply.setAlpha(authorized ? 1f : .52f);
++                        refreshApply.setAlpha(authorized ? 1f : .52f); // CORRIGIDO BUG2: mantém bloqueio visual para key curta.
+                     }
+                     message("Modo " + chosen + " Hz selecionado");
+                 });
+@@ -1076,12 +1107,12 @@
+         }
+         horizontal.addView(row);
+         list.addView(horizontal, lp(-1, Ui.dp(this, 38)));
+-        refreshApply = addAction(list, "Selecione um modo suportado para aplicar", v -> {
++        refreshApply = addRestrictedAction(list, "Selecione um modo suportado para aplicar", v -> { // CORRIGIDO BUG2: aplicação de Hz exige key com 7+ dias.
+             if (selectedRefreshHz >= 0) applyRefresh(selectedRefreshHz);
+         });
+         refreshApply.setEnabled(false);
+         refreshApply.setAlpha(.55f);
+-        refreshRestore = addAction(list, "RESTAURAR Hz ORIGINAL", v ->
++        refreshRestore = addRestrictedAction(list, "RESTAURAR Hz ORIGINAL", v -> // CORRIGIDO BUG2: restauração de Hz exige key com 7+ dias.
+                 ShellManager.restoreGlobalRefreshRate(this, (ok, msg) -> {
+                     if (!destroyed) postMessage(ok, msg);
+                 }));
+@@ -1168,12 +1199,12 @@
+ 
+         section(list, "LIMPEZA DE MEMÓRIA");
+         addNotice(list, "Ações pontuais", "Limpar cache usa drop_caches; liberar RAM encerra somente processos em segundo plano. Ambas exigem shell privilegiada.");
+-        addAction(list, "LIMPAR CACHE AGORA", v -> ShellManager.clearCache((ok, msg) -> {
++        addRestrictedAction(list, "LIMPAR CACHE AGORA", v -> ShellManager.clearCache((ok, msg) -> { // CORRIGIDO BUG2: limpeza remota exige key com 7+ dias.
+             if (destroyed) return;
+             if (ok) prefs.edit().putBoolean("feature_cache", true).apply();
+             postMessage(ok, msg);
+         }));
+-        addAction(list, "LIBERAR RAM AGORA", v -> ShellManager.clearRam((ok, msg) -> {
++        addRestrictedAction(list, "LIBERAR RAM AGORA", v -> ShellManager.clearRam((ok, msg) -> { // CORRIGIDO BUG2: liberação remota exige key com 7+ dias.
+             if (destroyed) return;
+             if (ok) prefs.edit().putBoolean("feature_ram", true).apply();
+             postMessage(ok, msg);
+@@ -1201,7 +1232,7 @@
+         section(list, "STATUS E RESTAURAÇÃO");
+         addNotice(list, "Status", permissionStatus(), Ui.MUTED);
+         addNotice(list, "Acesso", "Instagram: @davirosy2 · TikTok: @davirosy2", Ui.BRIGHT);
+-        addAction(list, "RESTAURAR TUDO AO PADRÃO", v -> restoreManagedPreferences());
++        addRestrictedAction(list, "RESTAURAR TUDO AO PADRÃO", v -> restoreManagedPreferences()); // CORRIGIDO BUG2: restauração remota fica restrita abaixo de 7 dias.
+         scroll.addView(list);
+         return scroll;
+     }
+@@ -1232,6 +1263,81 @@
+         list.addView(row, params);
+     }
+ 
++    private void refreshLicenseInfo() { // CORRIGIDO BUG2: recalcula dias a cada atualização sem usar cache antigo.
++        String key = activeLicenseKey == null ? "" : activeLicenseKey.trim(); // CORRIGIDO BUG2: normaliza a key ativa.
++        if (key.isEmpty() && prefs != null) key = prefs.getString("key", ""); // CORRIGIDO BUG2: permite revalidar sessões que optaram por salvar a key.
++        try { // CORRIGIDO BUG2: falha de cache nunca pode derrubar a overlay.
++            licenseInfo = LicenseValidator.currentAccess(this, key); // CORRIGIDO BUG2: obtém dataAtual/dataExpiracao/dias em UTC.
++            if (licenseStatus != null) { // CORRIGIDO BUG2: só toca a View se ela já foi criada.
++                if (!licenseInfo.valid) licenseStatus.setText("Licença: key não validada"); // CORRIGIDO BUG2: estado ausente bloqueia recursos restritos.
++                else if (licenseInfo.expired) licenseStatus.setText("Licença: expirada"); // CORRIGIDO BUG2: <=0 bloqueia tudo.
++                else if (licenseInfo.daysRemaining == null) licenseStatus.setText("Licença: trial · expiração não informada"); // CORRIGIDO BUG2: data nula não aparece como 0 dias.
++                else if (licenseInfo.fullAccess) licenseStatus.setText("Licença: " + licenseInfo.daysRemaining + " dias restantes · acesso total"); // CORRIGIDO BUG2: >=7 exibe liberação total.
++                else licenseStatus.setText("Licença: " + licenseInfo.daysRemaining + " dias restantes · disponível para keys com 7+ dias"); // CORRIGIDO BUG2: <7 informa o motivo do bloqueio.
++            } // CORRIGIDO BUG2: fecha a guarda da View.
++            if (revalidateKeyButton != null) { // CORRIGIDO BUG2: botão só funciona quando há key ativa.
++                boolean canRevalidate = !key.isEmpty(); // CORRIGIDO BUG2: evita revalidação de entrada vazia.
++                revalidateKeyButton.setEnabled(canRevalidate); // CORRIGIDO BUG2: mantém a UI coerente.
++                revalidateKeyButton.setAlpha(canRevalidate ? 1f : .52f); // CORRIGIDO BUG2: indica indisponibilidade sem crash.
++            } // CORRIGIDO BUG2: fecha a guarda do botão.
++        } catch (Throwable error) { // CORRIGIDO BUG2: cache corrompido vira bloqueio seguro e mensagem amigável.
++            Log.e(FLOW_TAG, "OVERLAY_LICENSE_INFO_FAILED", error); // CORRIGIDO BUG2: registra a exceção sem key em texto.
++            licenseInfo = LicenseKeyInfo.empty(System.currentTimeMillis()); // CORRIGIDO BUG2: falha de leitura não libera funções.
++            if (licenseStatus != null) licenseStatus.setText("Licença: não foi possível calcular os dias"); // CORRIGIDO BUG2: informa o usuário.
++        } // CORRIGIDO BUG2: encerra o tratamento do snapshot.
++    } // CORRIGIDO BUG2: fecha atualização da licença.
++
++    private void revalidateKey() { // CORRIGIDO BUG2: implementa o botão Revalidar key.
++        if (destroyed || licenseRequest != null) return; // CORRIGIDO BUG2: impede duas validações concorrentes.
++        String key = activeLicenseKey == null ? "" : activeLicenseKey.trim(); // CORRIGIDO BUG2: usa a key da sessão.
++        if (key.isEmpty() && prefs != null) key = prefs.getString("key", "").trim(); // CORRIGIDO BUG2: fallback para key salva.
++        if (key.isEmpty()) { message(false, "Nenhuma key ativa para revalidar."); return; } // CORRIGIDO BUG2: erro visível sem exceção.
++        final String requestedKey = key; // CORRIGIDO BUG2: torna a key imutável para o callback assíncrono.
++        if (revalidateKeyButton != null) { revalidateKeyButton.setEnabled(false); revalidateKeyButton.setText("Validando…"); } // CORRIGIDO BUG2: evita toques repetidos.
++        message("Limpando cache e revalidando key…"); // CORRIGIDO BUG2: informa o início da operação.
++        licenseRequest = LicenseValidator.revalidateKey(this, requestedKey, new LicenseValidator.Callback() { // CORRIGIDO BUG2: rede roda em Dispatchers.IO e callback retorna Main.
++            @Override public void onResult(LicenseValidator.Result result) { // CORRIGIDO BUG2: recebe somente o resultado estruturado.
++                if (destroyed) return; // CORRIGIDO BUG1: não toca Views depois que o serviço morreu.
++                licenseRequest = null; // CORRIGIDO BUG2: libera nova tentativa.
++                activeLicenseKey = requestedKey; // CORRIGIDO BUG2: mantém a key corrente para próximas revalidações.
++                if (result.valid) { // CORRIGIDO BUG2: só salva sessão quando a API confirmou a key.
++                    LicenseValidator.startMonitoring(getApplicationContext(), requestedKey); // CORRIGIDO BUG2: mantém revalidação periódica original.
++                    refreshLicenseInfo(); // CORRIGIDO BUG2: mostra o novo número de dias.
++                    updateCapabilityStates(); // CORRIGIDO BUG2: >=7 libera controles imediatamente.
++                    message(true, result.message + (result.daysRemaining == null ? " · trial" : " · " + result.daysRemaining + " dias restantes")); // CORRIGIDO BUG2: confirma o resultado ao usuário.
++                } else { // CORRIGIDO BUG2: falha não mantém cache antigo.
++                    licenseInfo = LicenseKeyInfo.empty(System.currentTimeMillis()); // CORRIGIDO BUG2: bloqueia funções até nova validação válida.
++                    refreshLicenseInfo(); // CORRIGIDO BUG2: atualiza texto e botão.
++                    updateCapabilityStates(); // CORRIGIDO BUG2: aplica bloqueio seguro.
++                    message(false, result.message); // CORRIGIDO BUG2: mostra erro amigável sem fechar o app.
++                } // CORRIGIDO BUG2: fecha tratamento do resultado.
++                if (revalidateKeyButton != null) revalidateKeyButton.setText("Revalidar key"); // CORRIGIDO BUG2: restaura o texto do botão.
++            } // CORRIGIDO BUG2: fecha callback na Main Looper.
++        }); // CORRIGIDO BUG2: inicia validação assíncrona protegida.
++    } // CORRIGIDO BUG2: fecha revalidação.
++
++    private TextView addRestrictedAction(LinearLayout list, String label, View.OnClickListener click) { // CORRIGIDO BUG2: registra ações restritas pela regra de 7 dias.
++        TextView button = addAction(list, label, click); // CORRIGIDO BUG2: preserva a construção original do botão.
++        licenseRestrictedButtons.add(button); // CORRIGIDO BUG2: permite aplicar enabled/alpha/texto centralmente.
++        licenseRestrictedLabels.put(button, label); // CORRIGIDO BUG2: restaura o texto após revalidação.
++        return button; // CORRIGIDO BUG2: mantém a API usada pelos campos do painel.
++    } // CORRIGIDO BUG2: fecha fábrica de ações restritas.
++
++    private void applyLicenseRestrictions() { // CORRIGIDO BUG2: aplica exclusivamente a regra de dias às ações marcadas.
++        boolean fullAccess = licenseInfo != null && licenseInfo.fullAccess; // CORRIGIDO BUG2: somente dias >=7 liberam tudo.
++        for (TextView button : licenseRestrictedButtons) { // CORRIGIDO BUG2: percorre todos os botões de função restrita.
++            if (fullAccess) { // CORRIGIDO BUG2: key com 7+ dias não sofre bloqueio de licença.
++                button.setEnabled(true); // CORRIGIDO BUG2: garante clique habilitado para a licença completa.
++                button.setAlpha(1f); // CORRIGIDO BUG2: remove transparência de bloqueio da licença.
++                button.setText(licenseRestrictedLabels.get(button)); // CORRIGIDO BUG2: devolve o rótulo original.
++            } else { // CORRIGIDO BUG2: trial/<7/expirada ficam restritos.
++                button.setEnabled(false); // CORRIGIDO BUG2: impede ação sem a faixa de dias exigida.
++                button.setAlpha(.42f); // CORRIGIDO BUG2: indica visualmente o bloqueio.
++                button.setText("Disponível para keys com 7+ dias"); // CORRIGIDO BUG2: explica o motivo em português.
++            } // CORRIGIDO BUG2: fecha decisão do botão.
++        } // CORRIGIDO BUG2: fecha todos os botões.
++    } // CORRIGIDO BUG2: fecha aplicação de restrições.
++
+     private TextView addAction(LinearLayout list, String label, View.OnClickListener click) {
+         TextView button = Ui.text(this, label, 10, Ui.BRIGHT, true);
+         button.setGravity(Gravity.CENTER);
+@@ -1719,14 +1825,22 @@
+         });
+     }
+ 
++    private boolean hasFullLicense() { // CORRIGIDO BUG2: helper evita inversão da regra em callbacks e cliques.
++        return licenseInfo != null && licenseInfo.valid && licenseInfo.fullAccess && !licenseInfo.expired; // CORRIGIDO BUG2: somente diasRestantes >= 7 libera recurso remoto.
++    } // CORRIGIDO BUG2: fecha a regra central da UI.
++
+     private void updateCapabilityStates() {
+         updateCapabilityStates(ShizukuBridge.hasPermission());
+     }
+ 
+     private void updateCapabilityStates(boolean authorized) {
+         if (destroyed) return;
+-        boolean bridgeReady = authorized && bridgeVerified;
+-        if (bridgeReady && !shellCapabilitiesKnown && !shellCapabilityProbeInProgress) {
++        refreshLicenseInfo(); // CORRIGIDO BUG2: recalcula dias antes de bloquear/liberar qualquer função.
++        boolean licenseFullAccess = licenseInfo != null && licenseInfo.fullAccess; // CORRIGIDO BUG2: >=7 é a única condição de liberação total.
++        boolean licenseExpired = licenseInfo != null && licenseInfo.expired; // CORRIGIDO BUG2: <=0 bloqueia tudo que é restrito.
++        boolean bridgeReady = authorized && bridgeVerified; // CORRIGIDO BUG1: binder/teste continuam sendo pré-requisitos técnicos.
++        if (bridgeReady && licenseFullAccess && !licenseExpired // CORRIGIDO BUG2: exige acesso total antes da sondagem.
++                && !shellCapabilitiesKnown && !shellCapabilityProbeInProgress) { // CORRIGIDO BUG2: capability remota não é sondada para key curta.
+             shellCapabilityProbeInProgress = true;
+             ShellManager.probeCapabilities(new ShellManager.CapabilityCallback() {
+                 @Override public void onFinished(Set<String> unsupported) {
+@@ -1747,16 +1861,19 @@
+             boolean thermal = "thermal".equals(key);
+             boolean unavailable = unavailableShellFeatures.contains(key);
+             boolean busy = pendingToggleOperations.contains(key);
+-            boolean capabilityAvailable = localControl || bridgeReady;
++            boolean licenseRestricted = !localControl && !thermal; // CORRIGIDO BUG2: todos os ajustes remotos usam a regra de 7 dias.
++            boolean capabilityAvailable = localControl || (bridgeReady && licenseFullAccess && !licenseExpired); // CORRIGIDO BUG2: não liberar antes de calcular os dias.
+             entry.getValue().setEnabled(capabilityAvailable && !thermal
+-                    && !unavailable && !busy);
+-            entry.getValue().setAlpha((thermal || unavailable) ? .42f : 1f);
++                    && !unavailable && !busy); // CORRIGIDO BUG1: estado busy/binder evita callback em View inválida.
++            entry.getValue().setAlpha((thermal || unavailable || (licenseRestricted && !licenseFullAccess)) ? .42f : 1f); // CORRIGIDO BUG2: <7 fica visualmente bloqueado.
+             TextView description = toggleDescriptions.get(key);
+             if (description != null) {
+-                description.setText(unavailable
+-                        ? "não suportado neste aparelho"
+-                        : toggleOriginalDescriptions.getOrDefault(key, ""));
+-            }
++                description.setText(licenseRestricted && !licenseFullAccess // CORRIGIDO BUG2: prioriza o motivo da licença curta.
++                        ? "Disponível para keys com 7+ dias" // CORRIGIDO BUG2: texto solicitado para função restrita.
++                        : (unavailable // CORRIGIDO BUG2: preserva a mensagem de capability quando a key libera.
++                        ? "não suportado neste aparelho" // CORRIGIDO BUG2: capability física continua sendo respeitada.
++                        : toggleOriginalDescriptions.getOrDefault(key, ""))); // CORRIGIDO BUG2: restaura descrição quando >=7.
++            } // CORRIGIDO BUG2: fecha a atualização da descrição do toggle.
+             if (thermal && entry.getValue().isChecked()) {
+                 updatingControls = true;
+                 entry.getValue().setChecked(false);
+@@ -1774,65 +1891,66 @@
+         }
+         SeekBar longPress = sliderViews.get("long_press");
+         if (longPress != null) {
+-            boolean canUse = bridgeReady && !pendingToggleOperations.contains("slider_long_press");
++            boolean canUse = bridgeReady && licenseFullAccess && !licenseExpired && !pendingToggleOperations.contains("slider_long_press"); // CORRIGIDO BUG2: long press só libera em >=7 dias.
+             longPress.setEnabled(canUse);
+             longPress.setAlpha(canUse ? 1f : .52f);
+         }
+         SeekBar animation = sliderViews.get("animation_scale");
+         if (animation != null) {
+-            boolean canUse = bridgeReady && !pendingToggleOperations.contains("slider_animation_scale");
++            boolean canUse = bridgeReady && licenseFullAccess && !licenseExpired && !pendingToggleOperations.contains("slider_animation_scale"); // CORRIGIDO BUG2: animações só liberam em >=7 dias.
+             animation.setEnabled(canUse);
+             animation.setAlpha(canUse ? 1f : .52f);
+         }
+ 
+         readNativeDisplayInfo(authorized);
+         if (resolutionSave != null) {
+-            resolutionSave.setEnabled(bridgeReady);
+-            resolutionSave.setAlpha(bridgeReady ? 1f : .52f);
++            resolutionSave.setEnabled(bridgeReady && licenseFullAccess && !licenseExpired); // CORRIGIDO BUG2: salvar estado exige 7+ dias.
++            resolutionSave.setAlpha(bridgeReady && licenseFullAccess && !licenseExpired ? 1f : .52f); // CORRIGIDO BUG2: reflete o bloqueio por licença.
+         }
+         boolean canRestore = bridgeReady && prefs.contains("original_display_size")
+                 && prefs.contains("original_display_density");
+         if (resolutionRestore != null) {
+-            resolutionRestore.setEnabled(canRestore);
+-            resolutionRestore.setAlpha(canRestore ? 1f : .52f);
++            resolutionRestore.setEnabled(canRestore && licenseFullAccess && !licenseExpired); // CORRIGIDO BUG2: restaurar estado exige 7+ dias.
++            resolutionRestore.setAlpha(canRestore && licenseFullAccess && !licenseExpired ? 1f : .52f); // CORRIGIDO BUG2: reflete o bloqueio por licença.
+         }
+         if (displayApply != null) {
+-            displayApply.setEnabled(bridgeReady);
+-            displayApply.setAlpha(bridgeReady ? 1f : .52f);
++            displayApply.setEnabled(bridgeReady && licenseFullAccess && !licenseExpired); // CORRIGIDO BUG2: aplicar display exige 7+ dias.
++            displayApply.setAlpha(bridgeReady && licenseFullAccess && !licenseExpired ? 1f : .52f); // CORRIGIDO BUG2: reflete o bloqueio por licença.
+         }
+         if (displayReset != null) {
+-            displayReset.setEnabled(canRestore);
+-            displayReset.setAlpha(canRestore ? 1f : .52f);
++            displayReset.setEnabled(canRestore && licenseFullAccess && !licenseExpired); // CORRIGIDO BUG2: restaurar display exige 7+ dias.
++            displayReset.setAlpha(canRestore && licenseFullAccess && !licenseExpired ? 1f : .52f); // CORRIGIDO BUG2: reflete o bloqueio por licença.
+         }
+         if (overscanReset != null) {
+-            boolean canResetOverscan = bridgeReady && overscanSupported;
++            boolean canResetOverscan = bridgeReady && overscanSupported && licenseFullAccess && !licenseExpired; // CORRIGIDO BUG2: overscan exige 7+ dias.
+             overscanReset.setEnabled(canResetOverscan);
+-            overscanReset.setAlpha(canResetOverscan ? 1f : .52f);
++            overscanReset.setAlpha(canResetOverscan ? 1f : .52f); // CORRIGIDO BUG2: reflete licença e capability.
+         }
+-        if (resolutionSelector != null) resolutionSelector.setEnabled(bridgeReady);
+-        if (dpiSelector != null) dpiSelector.setEnabled(bridgeReady);
++        if (resolutionSelector != null) resolutionSelector.setEnabled(bridgeReady && licenseFullAccess && !licenseExpired); // CORRIGIDO BUG2: selector remoto exige 7+ dias.
++        if (dpiSelector != null) dpiSelector.setEnabled(bridgeReady && licenseFullAccess && !licenseExpired); // CORRIGIDO BUG2: selector remoto exige 7+ dias.
+         if (stretchSlider != null) {
+-            boolean canStretch = bridgeReady
+-                    && !pendingToggleOperations.contains("slider_stretch_percent");
++            boolean canStretch = bridgeReady && licenseFullAccess && !licenseExpired // CORRIGIDO BUG2: stretch exige acesso total.
++                    && !pendingToggleOperations.contains("slider_stretch_percent"); // CORRIGIDO BUG2: stretch exige 7+ dias.
+             stretchSlider.setEnabled(canStretch);
+             stretchSlider.setAlpha(canStretch ? 1f : .52f);
+         }
+         if (fullscreenStretchToggle != null) {
+-            boolean canStretch = bridgeReady
+-                    && !pendingToggleOperations.contains("fullscreen_stretch")
+-                    && !pendingToggleOperations.contains("slider_stretch_percent");
++            boolean canStretch = bridgeReady && licenseFullAccess && !licenseExpired // CORRIGIDO BUG2: corte lateral exige acesso total.
++                    && !pendingToggleOperations.contains("fullscreen_stretch") // CORRIGIDO BUG2: evita concorrência durante aplicação.
++                    && !pendingToggleOperations.contains("slider_stretch_percent"); // CORRIGIDO BUG2: corte lateral exige 7+ dias.
+             fullscreenStretchToggle.setEnabled(canStretch);
+             fullscreenStretchToggle.setAlpha(canStretch ? 1f : .52f);
+         }
+         if (refreshApply != null) {
+-            boolean canApplyRefresh = bridgeReady && selectedRefreshHz >= 0;
++            boolean canApplyRefresh = bridgeReady && licenseFullAccess && !licenseExpired && selectedRefreshHz >= 0; // CORRIGIDO BUG2: Hz exige 7+ dias.
+             refreshApply.setEnabled(canApplyRefresh);
+-            refreshApply.setAlpha(canApplyRefresh ? 1f : .52f);
++            refreshApply.setAlpha(canApplyRefresh ? 1f : .52f); // CORRIGIDO BUG2: reflete o bloqueio por licença.
+         }
+         if (refreshRestore != null) {
+-            refreshRestore.setEnabled(bridgeReady);
+-            refreshRestore.setAlpha(bridgeReady ? 1f : .52f);
++            refreshRestore.setEnabled(bridgeReady && licenseFullAccess && !licenseExpired); // CORRIGIDO BUG2: restauração de Hz exige 7+ dias.
++            refreshRestore.setAlpha(bridgeReady && licenseFullAccess && !licenseExpired ? 1f : .52f); // CORRIGIDO BUG2: reflete o bloqueio por licença.
+         }
++        applyLicenseRestrictions(); // CORRIGIDO BUG2: atualiza textos dos botões restritos em uma única etapa.
+     }
+ 
+     private void selectTab(int page) {
+@@ -1992,6 +2110,7 @@
+                 || key.equals("animation_scale");
+         ShizukuBridge.applySafeSettings(this, touch, system, press, scale,
+                 (ok, msg) -> {
++                    if (destroyed) return; // CORRIGIDO BUG1: callback tardio não toca SeekBar/estado após destruir a overlay.
+                     pendingToggleOperations.remove(pendingKey);
+                     if (ok) {
+                         prefs.edit().putInt(pendingKey, requestedValue).apply();
+diff -ruN /home/user/orig_r12/app/src/main/java/painel/sensi/santos/ShizukuBridge.java /home/user/work_r12/app/src/main/java/painel/sensi/santos/ShizukuBridge.java
+--- /home/user/orig_r12/app/src/main/java/painel/sensi/santos/ShizukuBridge.java	2026-09-11 21:53:10.000000000 +0000
++++ /home/user/work_r12/app/src/main/java/painel/sensi/santos/ShizukuBridge.java	2026-09-11 22:44:58.690908369 +0000
+@@ -216,7 +216,7 @@
+     /** Sonda Binder/permission em thread própria e devolve o snapshot na UI. */
+     public static void refreshStatusAsync(final android.content.Context context,
+                                           final StatusCallback callback) {
+-        new Thread(() -> {
++        ShizukuManager.launchIo("santos-shizuku-status", () -> { // CORRIGIDO BUG1: status/binder roda em Coroutine Dispatchers.IO.
+             try {
+                 if (context != null) {
+                     // Em processos não-provider, solicitar explicitamente o binder
+@@ -239,7 +239,7 @@
+                     }
+                 });
+             }
+-        }, "santos-shizuku-status").start();
++        }); // CORRIGIDO BUG1: encerra a coroutine IO sem criar thread manual.
+     }
+ 
+     /** Compatibilidade para chamadas sem Contexto. */
+@@ -282,6 +282,7 @@
+      * execução é Shizuku.newProcess(). Este método é a única porta usada pelo app.
+      */
+     public static CommandResult executeCommand(String command) {
++        Log.d("SHIZUKU_DEBUG", "antes de executar: " + command); // CORRIGIDO BUG1: registra entrada da API pública.
+         if (command == null || command.trim().isEmpty()) {
+             recordFailure("comando vazio", "Comando vazio");
+             return new CommandResult(false, -1, "", "Comando vazio");
+@@ -295,7 +296,14 @@
+                     "Execução remota recusada na Main Thread");
+         }
+         // sh -c é criado remotamente pelo Shizuku.newProcess; não há shell local.
+-        return executeArgv(new String[]{"sh", "-c", command});
++        try { // CORRIGIDO BUG1: toda chamada pública fica protegida contra binder/processo morto.
++            CommandResult result = executeArgv(new String[]{"sh", "-c", command}); // CORRIGIDO BUG1: execução permanece no processo remoto do Shizuku.
++            Log.d("SHIZUKU_DEBUG", "depois de executar: " + command + " ok=" + result.ok); // CORRIGIDO BUG1: registra retorno sem tocar UI.
++            return result; // CORRIGIDO BUG1: devolve erro estruturado ao consumidor.
++        } catch (Throwable error) { // CORRIGIDO BUG1: impede exceção de fechar o painel.
++            Log.e("SHIZUKU_DEBUG", "erro: " + error, error); // CORRIGIDO BUG1: registra causa solicitada.
++            return new CommandResult(false, -1, "", error.getMessage() == null ? "Falha ao executar comando Shizuku" : error.getMessage()); // CORRIGIDO BUG1: converte falha em mensagem amigável.
++        } // CORRIGIDO BUG1: encerra proteção da API pública.
+     }
+ 
+     // API 13.1.5 mantém newProcess privado; esta é a assinatura real da API.
+@@ -366,6 +374,8 @@
+     private static CommandResult executeArgvUnlocked(String[] command) {
+         lastRemoteProcessCreated = false;
+         lastException = "";
++        String printable = command == null ? "null" : String.join(" ", command); // CORRIGIDO BUG1: registra o comando mesmo quando a entrada é inválida.
++        Log.d("SHIZUKU_DEBUG", "antes de executar: " + printable); // CORRIGIDO BUG1: log obrigatório antes de qualquer processo remoto.
+         if (!isAvailable()) {
+             String message = status();
+             lastBridgeState = message.toLowerCase(Locale.US).contains("não iniciado")
+@@ -390,7 +400,6 @@
+             return new CommandResult(false, -1, "", "Comando vazio");
+         }
+ 
+-        String printable = String.join(" ", command);
+         Log.d(FLOW_TAG, "SHIZUKU_REMOTE_PROCESS_CREATE command=" + printable); // LOG ADICIONADO
+         ShizukuRemoteProcess process = null;
+         java.io.InputStream stdoutStream = null;
+@@ -416,8 +425,8 @@
+             StringBuilder stderr = new StringBuilder();
+             final java.io.InputStream outStreamForReader = stdoutStream;
+             final java.io.InputStream errStreamForReader = stderrStream;
+-            outThread = new Thread(() -> copyStream(outStreamForReader, stdout), "santos-shizuku-stdout");
+-            errThread = new Thread(() -> copyStream(errStreamForReader, stderr), "santos-shizuku-stderr");
++            outThread = new Thread(() -> copyStream(outStreamForReader, stdout), "santos-shizuku-stdout"); // CORRIGIDO BUG1: thread auxiliar apenas drena stdout e não executa comando/UI.
++            errThread = new Thread(() -> copyStream(errStreamForReader, stderr), "santos-shizuku-stderr"); // CORRIGIDO BUG1: thread auxiliar apenas drena stderr e não executa comando/UI.
+             outThread.setDaemon(true);
+             errThread.setDaemon(true);
+             outThread.start();
+@@ -482,6 +491,7 @@
+             else Log.e(TAG, "FAILED exit=" + exitCode + " command=" + printable);
+             Log.d(FLOW_TAG, "SHIZUKU_REMOTE_RESULT exit=" + exitCode
+                     + " stdoutChars=" + out.length() + " stderrChars=" + err.length()); // LOG ADICIONADO
++            Log.d("SHIZUKU_DEBUG", "depois de executar: " + printable + " exit=" + exitCode); // CORRIGIDO BUG1: log obrigatório após o comando remoto.
+             return new CommandResult(exitCode == 0, exitCode, out, err);
+         } catch (Throwable error) {
+             String detail = error.getClass().getSimpleName() + ": "
+@@ -493,6 +503,7 @@
+             recordCommand(printable, -1, detail);
+             Log.e(TAG, "Falha de conexão/execução command=" + printable, error);
+             Log.e(FLOW_TAG, "SHIZUKU_REMOTE_EXCEPTION command=" + printable, error); // LOG ADICIONADO
++            Log.e("SHIZUKU_DEBUG", "erro: " + error, error); // CORRIGIDO BUG1: log obrigatório da exceção remota.
+             return new CommandResult(false, -1, "", detail);
+         } finally {
+             // Só destruir no caminho em que a criação/espera falhou e o remoto
+@@ -575,7 +586,7 @@
+      * fazer a UI parecer travada.
+      */
+     public static void testBridge(final Context context, final Callback callback) {
+-        new Thread(() -> {
++        ShizukuManager.launchIo("santos-shizuku-bridge-test", () -> { // CORRIGIDO BUG1: teste da ponte roda fora da Main Thread.
+             try {
+                 if (!hasPermission()) {
+                     dispatch(callback, false, status());
+@@ -604,7 +615,7 @@
+                 Log.e(TAG, "Exceção fora do executor em testBridge", error);
+                 dispatch(callback, false, detail);
+             }
+-        }, "santos-shizuku-bridge-test").start();
++        }); // CORRIGIDO BUG1: encerra o worker protegido do teste.
+     }
+ 
+     // ADICIONADO: entrega callback na Main Looper para proteger Views dos consumidores.
+@@ -750,7 +761,7 @@
+         final int press = Math.max(50, Math.min(1000, longPress));
+         final String animation = String.format(Locale.US, "%.2f",
+                 Math.max(0, Math.min(1000, animationPercent)) / 100f);
+-        new Thread(() -> {
++        ShizukuManager.launchIo("santos-shizuku-settings", () -> { // CORRIGIDO BUG1: settings remotos rodam em Coroutine IO.
+             try {
+                 saveOriginalSettingsIfNeeded(context);
+                 SharedPreferences prefs = context.getSharedPreferences("santos_session", Context.MODE_PRIVATE);
+@@ -840,7 +851,7 @@
+                 dispatch(callback, false, e.getClass().getSimpleName() + ": "
+                         + (e.getMessage() == null ? "falha ao aplicar ajustes" : e.getMessage()));
+             }
+-        }, "santos-shizuku-settings").start();
++        }); // CORRIGIDO BUG1: encerra a coroutine de settings.
+     }
+ 
+     public static void restoreSafeSettings(final Context context, final Callback callback) {
+@@ -849,7 +860,7 @@
+             dispatch(callback, false, status());
+             return;
+         }
+-        new Thread(() -> {
++        ShizukuManager.launchIo("santos-shizuku-restore", () -> { // CORRIGIDO BUG1: restauração não bloqueia o loop principal.
+             try {
+                 SharedPreferences prefs = context.getSharedPreferences("santos_session", Context.MODE_PRIVATE);
+                 String[][] values = {
+@@ -883,7 +894,7 @@
+                 dispatch(callback, false, e.getClass().getSimpleName() + ": "
+                         + (e.getMessage() == null ? "falha ao restaurar ajustes" : e.getMessage()));
+             }
+-        }, "santos-shizuku-restore").start();
++        }); // CORRIGIDO BUG1: encerra a coroutine de restauração.
+     }
+ 
+     private static final class RawDisplayState {
+@@ -1000,7 +1011,7 @@
+             dispatch(callback, false, status(), null);
+             return;
+         }
+-        new Thread(() -> {
++        ShizukuManager.launchIo("santos-display-info", () -> { // CORRIGIDO BUG1: leitura de wm/density roda em Coroutine IO.
+             try {
+                 RawDisplayState state = readRawDisplayState();
+                 DisplayInfo info = new DisplayInfo(state.physicalSize, state.overrideSize,
+@@ -1015,7 +1026,7 @@
+                 dispatch(callback, false, e.getClass().getSimpleName() + ": "
+                         + (e.getMessage() == null ? "falha ao ler wm" : e.getMessage()), null);
+             }
+-        }, "santos-display-info").start();
++        }); // CORRIGIDO BUG1: encerra a coroutine de leitura de display.
+     }
+ 
+     public static void applyDisplayProfile(final Context context, final int width,
+@@ -1030,7 +1041,7 @@
+             dispatch(callback, false, "Context inválido para aplicar o perfil de tela");
+             return;
+         }
+-        new Thread(() -> {
++        ShizukuManager.launchIo("santos-display-apply", () -> { // CORRIGIDO BUG1: aplicação de wm roda em Coroutine IO com contexto validado.
+             final SharedPreferences prefs = context.getSharedPreferences("santos_session", Context.MODE_PRIVATE);
+             try {
+                 RawDisplayState state = readRawDisplayState();
+@@ -1078,7 +1089,7 @@
+                         + (e.getMessage() == null ? "falha ao aplicar perfil" : e.getMessage())
+                         + "; rollback=" + rolledBack);
+             }
+-        }, "santos-display-apply").start();
++        }); // CORRIGIDO BUG1: encerra a coroutine de aplicação de display.
+     }
+ 
+     private static boolean restoreSavedDisplayTokens(SharedPreferences prefs) {
+@@ -1116,7 +1127,7 @@
+             dispatch(callback, false, status());
+             return;
+         }
+-        new Thread(() -> {
++        ShizukuManager.launchIo("santos-overscan-reset", () -> { // CORRIGIDO BUG1: reset remoto roda em Coroutine IO.
+             try {
+                 RawDisplayState before = readRawDisplayState();
+                 if (!before.overscanSupported) {
+@@ -1143,7 +1154,7 @@
+                 dispatch(callback, false, error.getClass().getSimpleName() + ": "
+                         + (error.getMessage() == null ? "falha ao resetar overscan" : error.getMessage()));
+             }
+-        }, "santos-overscan-reset").start();
++        }); // CORRIGIDO BUG1: encerra a coroutine de overscan.
+     }
+ 
+     public static void captureDisplayState(final Context context, final Callback callback) {
+@@ -1152,7 +1163,7 @@
+             dispatch(callback, false, status());
+             return;
+         }
+-        new Thread(() -> {
++        ShizukuManager.launchIo("santos-display-capture", () -> { // CORRIGIDO BUG1: captura remota roda em Coroutine IO.
+             try {
+                 RawDisplayState state = readRawDisplayState();
+                 SharedPreferences prefs = context.getSharedPreferences("santos_session", Context.MODE_PRIVATE);
+@@ -1164,7 +1175,7 @@
+                 dispatch(callback, false, e.getClass().getSimpleName() + ": "
+                         + (e.getMessage() == null ? "falha ao ler estado" : e.getMessage()));
+             }
+-        }, "santos-display-capture").start();
++        }); // CORRIGIDO BUG1: encerra a coroutine de captura.
+     }
+ 
+     public static void restoreDisplayState(final Context context, final Callback callback) {
+@@ -1173,7 +1184,7 @@
+             dispatch(callback, false, status());
+             return;
+         }
+-        new Thread(() -> {
++        ShizukuManager.launchIo("santos-display-restore", () -> { // CORRIGIDO BUG1: restauração de display roda em Coroutine IO.
+             try {
+                 SharedPreferences prefs = context.getSharedPreferences("santos_session", Context.MODE_PRIVATE);
+                 String size = settingValue(context, "original_display_size", "");
+@@ -1208,7 +1219,7 @@
+                 dispatch(callback, false, e.getClass().getSimpleName() + ": "
+                         + (e.getMessage() == null ? "falha ao restaurar tela" : e.getMessage()));
+             }
+-        }, "santos-display-restore").start();
++        }); // CORRIGIDO BUG1: encerra a coroutine de restauração de display.
+     }
+ 
+     private static String extract(String output, String label) {
+diff -ruN /home/user/orig_r12/app/src/main/kotlin/painel/sensi/santos/KeyManager.kt /home/user/work_r12/app/src/main/kotlin/painel/sensi/santos/KeyManager.kt
+--- /home/user/orig_r12/app/src/main/kotlin/painel/sensi/santos/KeyManager.kt	1970-01-01 00:00:00.000000000 +0000
++++ /home/user/work_r12/app/src/main/kotlin/painel/sensi/santos/KeyManager.kt	2026-09-11 22:37:24.732259647 +0000
+@@ -0,0 +1,106 @@
++package painel.sensi.santos // CORRIGIDO BUG2: centraliza cache, cálculo UTC e decisão de acesso por dias.
++
++import android.content.Context // CORRIGIDO BUG2: usa o contexto da aplicação para o cache.
++import android.util.Log // CORRIGIDO BUG2: registra as datas e a decisão final.
++import java.nio.charset.StandardCharsets // CORRIGIDO BUG2: torna o fingerprint determinístico.
++import java.security.MessageDigest // CORRIGIDO BUG2: mantém a key fora do cache em texto puro.
++import java.time.Instant // CORRIGIDO BUG2: representa os instantes sempre em UTC.
++import java.time.ZoneOffset // CORRIGIDO BUG2: formata o diagnóstico em UTC.
++import java.time.format.DateTimeFormatter // CORRIGIDO BUG2: formata o diagnóstico sem timezone local.
++
++/** Cache e regra única de liberação da licença. */ // CORRIGIDO BUG2: impede comparações duplicadas/invertidas em Activities e Services.
++object KeyManager { // CORRIGIDO BUG2: fornece uma fonte única de verdade para a key.
++    const val PREFS_NAME = "santos_session" // CORRIGIDO BUG2: mantém o armazenamento original do app.
++    const val SESSION_VALID = "license_session_valid" // CORRIGIDO BUG2: chave do estado validado.
++    const val SESSION_KEY_HASH = "license_key_hash" // CORRIGIDO BUG2: identifica a key atualmente validada.
++    const val SESSION_EXPIRES_AT = "license_expires_at" // CORRIGIDO BUG2: guarda a expiração em epoch UTC.
++    const val SESSION_EXPIRY_KNOWN = "license_expiry_known" // CORRIGIDO BUG2: não confunde expiração ausente com epoch zero.
++    const val SESSION_LAST_VALIDATED_AT = "license_last_validated_at" // CORRIGIDO BUG2: registra a validação mais recente.
++    const val MILLIS_PER_DAY = 1000L * 60L * 60L * 24L // CORRIGIDO BUG2: divisor explícito exigido para dias UTC.
++    private const val TAG = "KeyManager" // CORRIGIDO BUG2: identifica os logs da regra de dias.
++    private const val DEBUG_TAG = "KEY_DEBUG" // CORRIGIDO BUG2: facilita a inspeção no Logcat.
++    private val UTC_FORMATTER = DateTimeFormatter.ISO_INSTANT.withZone(ZoneOffset.UTC) // CORRIGIDO BUG2: evita timezone local no diagnóstico.
++
++    @JvmStatic // CORRIGIDO BUG2: permite que o OverlayService Java leia o snapshot.
++    fun calculateDaysRemaining(expiresAtMillis: Long?, currentAtMillis: Long = System.currentTimeMillis()): Long? { // CORRIGIDO BUG2: calcula dias somente a partir da data de expiração.
++        if (expiresAtMillis == null || expiresAtMillis <= 0L) return null // CORRIGIDO BUG2: data nula/inválida vira trial, não key expirada.
++        val differenceMillis = expiresAtMillis - currentAtMillis // CORRIGIDO BUG2: aplica dataExpiracao - dataAtual em epoch UTC.
++        val days = if (differenceMillis <= 0L) 0L else differenceMillis / MILLIS_PER_DAY // CORRIGIDO BUG2: evita zero incorreto para uma expiração já passada.
++        return days // CORRIGIDO BUG2: retorna o valor usado pela comparação >= 7/< 7/<= 0.
++    }
++
++    @JvmStatic // CORRIGIDO BUG2: permite testes determinísticos e integração com Java.
++    fun accessFromExpiration(valid: Boolean, expiresAtMillis: Long?, currentAtMillis: Long = System.currentTimeMillis()): LicenseKeyInfo { // CORRIGIDO BUG2: concentra toda a decisão de acesso.
++        val safeExpiry = expiresAtMillis?.takeIf { it > 0L } // CORRIGIDO BUG2: descarta datas nulas/zero sem transformar em expiração.
++        val days = calculateDaysRemaining(safeExpiry, currentAtMillis) // CORRIGIDO BUG2: calcula antes de aplicar qualquer bloqueio.
++        val expiryKnown = safeExpiry != null // CORRIGIDO BUG2: marca se a API informou data utilizável.
++        val expired = expiryKnown && (safeExpiry!! <= currentAtMillis || (days != null && days <= 0L)) // CORRIGIDO BUG2: <= 0 bloqueia tudo.
++        val fullAccess = valid && !expired && days != null && days >= 7L // CORRIGIDO BUG2: >= 7 libera todas as funções licenciadas.
++        val trial = valid && !expiryKnown // CORRIGIDO BUG2: data inválida/nula usa tratamento trial seguro.
++        val result = when { // CORRIGIDO BUG2: torna a ordem de decisão explícita.
++            !valid -> "key não validada" // CORRIGIDO BUG2: sessão inválida não libera recursos.
++            expired -> "key expirada: bloqueio total" // CORRIGIDO BUG2: expiração tem prioridade sobre qualquer cache.
++            fullAccess -> "liberação total: diasRestantes >= 7" // CORRIGIDO BUG2: condição correta solicitada.
++            trial -> "trial: expiração ausente; funções restritas bloqueadas" // CORRIGIDO BUG2: data ausente não é tratada como 0 válido.
++            else -> "funções restritas bloqueadas: diasRestantes < 7" // CORRIGIDO BUG2: keys abaixo de sete dias ficam limitadas.
++        } // CORRIGIDO BUG2: finaliza a decisão sem inversão premium/trial.
++        val currentText = UTC_FORMATTER.format(Instant.ofEpochMilli(currentAtMillis)) // CORRIGIDO BUG2: dataAtual visível em UTC.
++        val expiryText = if (safeExpiry == null) "não informada" else UTC_FORMATTER.format(Instant.ofEpochMilli(safeExpiry)) // CORRIGIDO BUG2: dataExpiracao visível em UTC.
++        Log.d(DEBUG_TAG, "dataAtual=$currentText dataExpiracao=$expiryText diasRestantes=${days ?: "desconhecido"} resultadoLiberacao=$result") // CORRIGIDO BUG2: registra todos os elementos da decisão.
++        return LicenseKeyInfo(valid, expiryKnown, expired, trial, fullAccess, days, safeExpiry ?: 0L, currentAtMillis, currentText, expiryText, result) // CORRIGIDO BUG2: devolve um estado imutável para a UI.
++    }
++
++    @JvmStatic // CORRIGIDO BUG2: fornece o snapshot usado pelo painel.
++    fun getAccessInfo(context: Context, key: String? = null): LicenseKeyInfo { // CORRIGIDO BUG2: permite invalidar cache de key diferente.
++        val now = System.currentTimeMillis() // CORRIGIDO BUG2: captura uma única dataAtual para o cálculo.
++        val normalizedKey = key?.trim().orEmpty() // CORRIGIDO BUG2: compara a key normalizada.
++        if (normalizedKey.isEmpty()) return LicenseKeyInfo.empty(now) // CORRIGIDO BUG2: ausência de key bloqueia funções restritas.
++        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) // CORRIGIDO BUG2: lê cache somente da aplicação.
++        val valid = prefs.getBoolean(SESSION_VALID, false) // CORRIGIDO BUG2: exige sessão marcada como válida.
++        val sameKey = prefs.getString(SESSION_KEY_HASH, "") == keyFingerprint(normalizedKey) // CORRIGIDO BUG2: não reaproveita cache de uma key anterior.
++        if (!valid || !sameKey) return LicenseKeyInfo.empty(now) // CORRIGIDO BUG2: cache antigo não libera uma key nova.
++        val known = prefs.getBoolean(SESSION_EXPIRY_KNOWN, prefs.getLong(SESSION_EXPIRES_AT, 0L) > 0L) // CORRIGIDO BUG2: compatibilidade com cache da versão anterior.
++        val expiry = if (known) prefs.getLong(SESSION_EXPIRES_AT, 0L) else null // CORRIGIDO BUG2: data desconhecida permanece null.
++        return accessFromExpiration(true, expiry, now) // CORRIGIDO BUG2: recalcula dias toda vez, sem manter número antigo.
++    }
++
++    @JvmStatic // CORRIGIDO BUG2: grava uma nova validação sem preservar a expiração da key anterior.
++    fun saveValidSession(context: Context, key: String, expiresAtMillis: Long?) { // CORRIGIDO BUG2: atualiza atomically o cache da key validada.
++        val normalizedKey = key.trim() // CORRIGIDO BUG2: usa a mesma normalização da leitura.
++        if (normalizedKey.isEmpty()) return // CORRIGIDO BUG2: nunca grava sessão para entrada vazia.
++        val expiry = expiresAtMillis?.takeIf { it > 0L } ?: 0L // CORRIGIDO BUG2: data inválida limpa o valor antigo.
++        val now = System.currentTimeMillis() // CORRIGIDO BUG2: registra a data atual da validação.
++        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit() // CORRIGIDO BUG2: grava no cache da aplicação.
++            .putBoolean(SESSION_VALID, true) // CORRIGIDO BUG2: marca a nova sessão como válida.
++            .putString(SESSION_KEY_HASH, keyFingerprint(normalizedKey)) // CORRIGIDO BUG2: substitui o fingerprint anterior.
++            .putLong(SESSION_EXPIRES_AT, expiry) // CORRIGIDO BUG2: não preserva expiração antiga quando a API omite a data.
++            .putBoolean(SESSION_EXPIRY_KNOWN, expiry > 0L) // CORRIGIDO BUG2: diferencia data conhecida de trial.
++            .putLong(SESSION_LAST_VALIDATED_AT, now) // CORRIGIDO BUG2: registra a nova validação.
++            .apply() // CORRIGIDO BUG2: persiste todas as alterações de uma vez.
++        accessFromExpiration(true, if (expiry > 0L) expiry else null, now) // CORRIGIDO BUG2: emite log da decisão armazenada.
++    }
++
++    @JvmStatic // CORRIGIDO BUG2: botão Revalidar key usa esta limpeza antes da consulta.
++    fun clearValidationCache(context: Context) { // CORRIGIDO BUG2: remove também os campos de dias/expiração antigos.
++        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit() // CORRIGIDO BUG2: abre o cache da aplicação.
++            .remove(SESSION_VALID) // CORRIGIDO BUG2: força a nova validação.
++            .remove(SESSION_KEY_HASH) // CORRIGIDO BUG2: impede reutilização de key antiga.
++            .remove(SESSION_EXPIRES_AT) // CORRIGIDO BUG2: remove expiração velha.
++            .remove(SESSION_EXPIRY_KNOWN) // CORRIGIDO BUG2: remove indicador velho.
++            .remove(SESSION_LAST_VALIDATED_AT) // CORRIGIDO BUG2: remove timestamp velho.
++            .apply() // CORRIGIDO BUG2: conclui a limpeza do cache.
++        Log.d(TAG, "cache de validação limpo") // CORRIGIDO BUG2: permite confirmar a ação no Logcat.
++    }
++
++    @JvmStatic // CORRIGIDO BUG2: mantém a API pública usada pelo fluxo inicial.
++    fun hasValidSession(context: Context, key: String): Boolean { // CORRIGIDO BUG2: valida key, cache e expiração calculada.
++        val info = getAccessInfo(context, key) // CORRIGIDO BUG2: usa a mesma regra da UI.
++        return info.valid && !info.expired // CORRIGIDO BUG2: uma key <= 0 dias não passa pelo auto-login.
++    }
++
++    @JvmStatic // CORRIGIDO BUG2: expõe o fingerprint sem revelar a key.
++    fun keyFingerprint(value: String): String { // CORRIGIDO BUG2: centraliza a identificação do cache.
++        val digest = MessageDigest.getInstance("SHA-256").digest(value.trim().toByteArray(StandardCharsets.UTF_8)) // CORRIGIDO BUG2: calcula hash estável.
++        return digest.joinToString("") { byte -> "%02x".format(byte) } // CORRIGIDO BUG2: mantém formato compatível com a sessão existente.
++    }
++}
+diff -ruN /home/user/orig_r12/app/src/main/kotlin/painel/sensi/santos/LicenseValidator.kt /home/user/work_r12/app/src/main/kotlin/painel/sensi/santos/LicenseValidator.kt
+--- /home/user/orig_r12/app/src/main/kotlin/painel/sensi/santos/LicenseValidator.kt	2026-09-11 20:59:13.000000000 +0000
++++ /home/user/work_r12/app/src/main/kotlin/painel/sensi/santos/LicenseValidator.kt	2026-09-11 22:47:22.537205818 +0000
+@@ -22,9 +22,12 @@
+ import java.net.UnknownHostException
+ import java.net.URL
+ import java.nio.charset.StandardCharsets
+-import java.security.MessageDigest
+-import java.time.Instant
+-import java.time.format.DateTimeParseException
++import java.time.Instant // CORRIGIDO BUG2: datas da API são convertidas para epoch UTC.
++import java.time.LocalDate // CORRIGIDO BUG2: aceita datas sem horário em formato de calendário.
++import java.time.LocalDateTime // CORRIGIDO BUG2: aceita respostas sem offset tratando-as como UTC.
++import java.time.ZoneOffset // CORRIGIDO BUG2: impede que o timezone local altere os dias restantes.
++import java.time.format.DateTimeFormatter // CORRIGIDO BUG2: suporta ISO e formatos legados de expiração.
++import java.time.format.DateTimeParseException // CORRIGIDO BUG2: trata data inválida sem crash.
+ import java.util.concurrent.CancellationException
+ import java.lang.ref.WeakReference
+ 
+@@ -55,8 +58,9 @@
+         @JvmField val criticalError: Boolean,
+         @JvmField val message: String,
+         @JvmField val definitiveInvalid: Boolean = false,
+-        @JvmField val expiresAtMillis: Long = 0L
+-    )
++        @JvmField val expiresAtMillis: Long = 0L, // CORRIGIDO BUG2: mantém a expiração normalizada em epoch UTC.
++        @JvmField val daysRemaining: Long? = null // CORRIGIDO BUG2: devolve os dias calculados para a UI e não um valor nulo/antigo.
++    ) // CORRIGIDO BUG2: fecha o modelo de resultado com a informação de dias.
+ 
+     interface Callback { fun onResult(result: Result) }
+ 
+@@ -89,7 +93,7 @@
+                 Result(false, true, "Não foi possível verificar a licença online.")
+             }
+             if (!isActive) return@launch
+-            if (result.valid) saveLocalSession(appContext, key.trim(), result.expiresAtMillis)
++            if (result.valid) saveLocalSession(appContext, key.trim(), result.expiresAtMillis) // CORRIGIDO BUG2: salva a expiração nova e limpa cache antigo quando ausente.
+             // scope usa Main.immediate, e este withContext deixa a garantia explícita.
+             withContext(Dispatchers.Main.immediate) {
+                 val target = callbackRef.get()
+@@ -163,16 +167,9 @@
+         }
+     }
+ 
+-    @JvmStatic
+-    fun hasValidLocalSession(context: Context, key: String): Boolean {
+-        val normalizedKey = key.trim()
+-        if (normalizedKey.isEmpty()) return false
+-        val prefs = context.applicationContext
+-            .getSharedPreferences("santos_session", Context.MODE_PRIVATE)
+-        if (!prefs.getBoolean(SESSION_VALID, false)) return false
+-        if (prefs.getString(SESSION_KEY_HASH, "") != keyFingerprint(normalizedKey)) return false
+-        val expires = prefs.getLong(SESSION_EXPIRES_AT, 0L)
+-        return expires <= 0L || expires > System.currentTimeMillis()
++    @JvmStatic // CORRIGIDO BUG2: consulta a mesma decisão de dias usada pelo painel.
++    fun hasValidLocalSession(context: Context, key: String): Boolean { // CORRIGIDO BUG2: não mantém cache antigo após expiração.
++        return KeyManager.hasValidSession(context, key) // CORRIGIDO BUG2: validade e expiração são avaliadas centralmente.
+     }
+ 
+     @JvmStatic
+@@ -219,9 +216,14 @@
+             when {
+                 statusCode == 408 || statusCode == 429 || statusCode >= 500 ->
+                     Result(false, true, "Servidor de licença indisponível temporariamente.")
+-                response?.valid == true && statusCode in 200..299 ->
+-                    Result(true, false, "Licença validada.", false,
+-                        response.expiresAtMillis ?: 0L)
++                response?.valid == true && statusCode in 200..299 -> { // CORRIGIDO BUG2: calcula dias antes de liberar funções.
++                    val access = KeyManager.accessFromExpiration(true, response.expiresAtMillis) // CORRIGIDO BUG2: usa a regra única UTC >=7/<7/<=0.
++                    if (access.expired) { // CORRIGIDO BUG2: uma resposta válida mas já expirada não abre o painel.
++                        Result(false, false, "Key expirada: acesso bloqueado.", true, response.expiresAtMillis ?: 0L, access.daysRemaining) // CORRIGIDO BUG2: reporta expiração sem deixar a UI interpretar como trial.
++                    } else { // CORRIGIDO BUG2: data ausente segue como trial, sem usar zero como expiração.
++                        Result(true, false, "Licença validada.", false, response.expiresAtMillis ?: 0L, access.daysRemaining) // CORRIGIDO BUG2: devolve os dias calculados.
++                    } // CORRIGIDO BUG2: fecha decisão de validade positiva.
++                } // CORRIGIDO BUG2: fecha cálculo de acesso para resposta válida.
+                 response?.definitiveInvalid == true ->
+                     Result(false, false, "Key inválida, expirada ou revogada.", true)
+                 else -> Result(false, true, "Resposta inválida ou temporária do servidor de licença.")
+@@ -246,10 +248,10 @@
+         }
+     }
+ 
+-    private data class ParsedResponse(
+-        val valid: Boolean?,
+-        val definitiveInvalid: Boolean,
+-        val expiresAtMillis: Long?
++    private data class ParsedResponse( // CORRIGIDO BUG2: mantém a resposta parseada separada da decisão de acesso.
++        val valid: Boolean?, // CORRIGIDO BUG2: estado retornado pelo servidor.
++        val definitiveInvalid: Boolean, // CORRIGIDO BUG2: invalidação explícita da API.
++        val expiresAtMillis: Long? // CORRIGIDO BUG2: data expirada convertida para epoch UTC.
+     )
+ 
+     private fun parseResponse(body: String): ParsedResponse? {
+@@ -301,50 +303,64 @@
+         return null
+     }
+ 
+-    private fun parseExpiration(value: Any?): Long? {
+-        val raw = when (value) {
+-            is Number -> value.toLong()
+-            is String -> value.trim().toLongOrNull()
+-            else -> null
+-        }
+-        if (raw != null && raw > 0L) {
+-            return if (raw < 100_000_000_000L) raw * 1_000L else raw
+-        }
+-        if (value !is String || value.isBlank()) return null
+-        return try {
+-            Instant.parse(value).toEpochMilli()
+-        } catch (_: DateTimeParseException) {
+-            null
+-        }
+-    }
+-
+-    private fun saveLocalSession(context: Context, key: String, expiresAtMillis: Long) {
+-        if (key.isBlank()) return
+-        val prefs = context.applicationContext
+-            .getSharedPreferences("santos_session", Context.MODE_PRIVATE)
+-        val editor = prefs.edit()
+-            .putBoolean(SESSION_VALID, true)
+-            .putString(SESSION_KEY_HASH, keyFingerprint(key))
+-        // Não inventar uma validade: se o servidor não enviou a data, preserva
+-        // a data válida já armazenada anteriormente.
+-        if (expiresAtMillis > 0L) editor.putLong(SESSION_EXPIRES_AT, expiresAtMillis)
+-        editor.apply()
+-    }
+-
+-    private fun localSessionExpiry(context: Context): Long = context.applicationContext
+-        .getSharedPreferences("santos_session", Context.MODE_PRIVATE)
+-        .getLong(SESSION_EXPIRES_AT, 0L)
+-
+-    @JvmStatic
+-    fun clearLocalSession(context: Context) {
+-        context.applicationContext.getSharedPreferences("santos_session", Context.MODE_PRIVATE)
+-            .edit().remove(SESSION_VALID).remove(SESSION_KEY_HASH)
+-            .remove(SESSION_EXPIRES_AT).apply()
+-    }
+-
+-    private fun keyFingerprint(value: String): String {
+-        val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8))
+-        return digest.joinToString("") { byte -> "%02x".format(byte) }
++    private fun parseExpiration(value: Any?): Long? { // CORRIGIDO BUG2: parseia todas as datas aceitas em UTC.
++        val raw = when (value) { // CORRIGIDO BUG2: preserva compatibilidade com epoch numérico.
++            is Number -> value.toLong() // CORRIGIDO BUG2: aceita epoch em segundos ou milissegundos.
++            is String -> value.trim().toLongOrNull() // CORRIGIDO BUG2: aceita epoch textual.
++            else -> null // CORRIGIDO BUG2: null/JSONObject.NULL não vira data zero.
++        } // CORRIGIDO BUG2: finaliza a leitura numérica.
++        if (raw != null && raw > 0L) { // CORRIGIDO BUG2: ignora valores numéricos inválidos.
++            return if (raw < 100_000_000_000L) raw * 1_000L else raw // CORRIGIDO BUG2: normaliza segundos para milissegundos UTC.
++        } // CORRIGIDO BUG2: segue para formatos de texto.
++        if (value !is String || value.isBlank()) return null // CORRIGIDO BUG2: data ausente será tratada como trial.
++        val text = value.trim() // CORRIGIDO BUG2: remove espaços que causariam parse inválido.
++        try { return Instant.parse(text).toEpochMilli() } // CORRIGIDO BUG2: prioriza ISO-8601 com timezone explícito.
++        catch (_: DateTimeParseException) { /* tenta os formatos abaixo */ } // CORRIGIDO BUG2: não deixa data inválida causar crash.
++        val dateTimeFormats = listOf("yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss") // CORRIGIDO BUG2: aceita horário sem offset e interpreta UTC.
++        for (pattern in dateTimeFormats) { // CORRIGIDO BUG2: percorre formatos legados de data/hora.
++            try { return LocalDateTime.parse(text, DateTimeFormatter.ofPattern(pattern)).atOffset(ZoneOffset.UTC).toInstant().toEpochMilli() } // CORRIGIDO BUG2: converte data/hora para UTC.
++            catch (_: DateTimeParseException) { /* próximo formato */ } // CORRIGIDO BUG2: tenta o próximo formato sem bloquear a key.
++        } // CORRIGIDO BUG2: finaliza tentativa de data/hora.
++        val dateFormats = listOf("dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd") // CORRIGIDO BUG2: suporta formatos PT-BR, legado EUA e ISO sem hora.
++        for (pattern in dateFormats) { // CORRIGIDO BUG2: percorre formatos de calendário conhecidos.
++            try { return LocalDate.parse(text, DateTimeFormatter.ofPattern(pattern)).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() } // CORRIGIDO BUG2: não usa timezone do aparelho.
++            catch (_: DateTimeParseException) { /* data inválida neste padrão */ } // CORRIGIDO BUG2: retorna null somente após todas as tentativas.
++        } // CORRIGIDO BUG2: finaliza o parse de data sem hora.
++        Log.w(TAG, "Data de expiração inválida recebida pelo servidor") // CORRIGIDO BUG2: diagnostica resposta inválida sem expor a key.
++        return null // CORRIGIDO BUG2: data inválida vira trial, não dias=0.
++    }
++
++    private fun saveLocalSession(context: Context, key: String, expiresAtMillis: Long) { // CORRIGIDO BUG2: delega o cache sem preservar expiração antiga.
++        KeyManager.saveValidSession(context, key, expiresAtMillis.takeIf { it > 0L }) // CORRIGIDO BUG2: uma resposta sem data limpa a validade antiga e vira trial.
++    }
++
++    @JvmStatic // CORRIGIDO BUG2: expõe o snapshot recalculado ao painel flutuante.
++    fun currentAccess(context: Context, key: String): LicenseKeyInfo = KeyManager.getAccessInfo(context, key) // CORRIGIDO BUG2: a UI sempre recebe dias UTC atuais.
++
++    @JvmStatic // CORRIGIDO BUG2: botão Revalidar key limpa cache explicitamente.
++    fun clearValidationCache(context: Context) = KeyManager.clearValidationCache(context) // CORRIGIDO BUG2: remove dias/expiração antigos antes da nova consulta.
++
++    @JvmStatic // CORRIGIDO BUG2: permite ao painel revalidar a key ativa mesmo sem persistência opcional.
++    fun revalidateKey(context: Context, key: String, callback: Callback): Request { // CORRIGIDO BUG2: limpa cache e valida a key informada.
++        val appContext = context.applicationContext // CORRIGIDO BUG2: não mantém Activity/Service como contexto de rede.
++        KeyManager.clearValidationCache(appContext) // CORRIGIDO BUG2: impede resultado antigo de continuar liberando funções.
++        return verifyOnce(appContext, key.trim(), callback) // CORRIGIDO BUG2: valida novamente em Dispatchers.IO.
++    }
++
++    @JvmStatic // CORRIGIDO BUG2: mantém uma API conveniente para fluxos que salvaram a key.
++    fun revalidateSavedKey(context: Context, callback: Callback): Request { // CORRIGIDO BUG2: revalida a key do cache sem duplicar regra.
++        val appContext = context.applicationContext // CORRIGIDO BUG2: usa contexto da aplicação.
++        val key = appContext.getSharedPreferences(KeyManager.PREFS_NAME, Context.MODE_PRIVATE).getString("key", "").orEmpty().trim() // CORRIGIDO BUG2: obtém a key salva.
++        return revalidateKey(appContext, key, callback) // CORRIGIDO BUG2: aplica limpeza completa antes da nova consulta.
++    }
++
++    private fun localSessionExpiry(context: Context): Long = context.applicationContext // CORRIGIDO BUG2: mantém compatibilidade com o monitor atual.
++        .getSharedPreferences(KeyManager.PREFS_NAME, Context.MODE_PRIVATE) // CORRIGIDO BUG2: lê o cache centralizado.
++        .getLong(KeyManager.SESSION_EXPIRES_AT, 0L) // CORRIGIDO BUG2: expiração permanece em epoch UTC.
++
++    @JvmStatic // CORRIGIDO BUG2: mantém a API de limpeza usada pela tela de bloqueio.
++    fun clearLocalSession(context: Context) { // CORRIGIDO BUG2: usa a limpeza completa do KeyManager.
++        KeyManager.clearValidationCache(context) // CORRIGIDO BUG2: remove também o indicador de expiração desconhecida.
+     }
+ 
+     private fun readResponse(stream: InputStream?): String {
+diff -ruN /home/user/orig_r12/app/src/main/kotlin/painel/sensi/santos/ShellManager.kt /home/user/work_r12/app/src/main/kotlin/painel/sensi/santos/ShellManager.kt
+--- /home/user/orig_r12/app/src/main/kotlin/painel/sensi/santos/ShellManager.kt	2026-09-11 09:57:28.000000000 +0000
++++ /home/user/work_r12/app/src/main/kotlin/painel/sensi/santos/ShellManager.kt	2026-09-11 22:38:46.240903641 +0000
+@@ -6,7 +6,10 @@
+ import android.os.Looper
+ import android.util.Log
+ import java.util.Locale
+-import java.util.concurrent.Executors
++import kotlinx.coroutines.CoroutineScope // CORRIGIDO BUG1: shell usa coroutine em vez de executor de thread.
++import kotlinx.coroutines.Dispatchers // CORRIGIDO BUG1: garante execução dos comandos em IO.
++import kotlinx.coroutines.SupervisorJob // CORRIGIDO BUG1: falha em uma operação não cancela a fila inteira.
++import kotlinx.coroutines.launch // CORRIGIDO BUG1: inicia trabalho remoto fora da UI.
+ 
+ /**
+  * Comandos de otimização locais do painel.
+@@ -33,8 +36,8 @@
+      * shells Shizuku simultâneas ao tocar em switches seguidos, o que deixava
+      * processos remotos presos em alguns firmwares e derrubava a overlay.
+      */
+-    private val executor = Executors.newSingleThreadExecutor()
+-    private val mainHandler = Handler(Looper.getMainLooper())
++    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO) // CORRIGIDO BUG1: toda fila remota roda em Dispatchers.IO.
++    private val mainHandler = Handler(Looper.getMainLooper()) // CORRIGIDO BUG1: callback visual volta para a Main Looper.
+     private const val TAG = "ShellManager"
+     private const val FLOW_TAG = "DEBUG_FLOW"
+ 
+@@ -152,7 +155,7 @@
+      */
+     @JvmStatic
+     fun probeCapabilities(callback: CapabilityCallback) {
+-        executor.execute {
++        ioScope.launch(Dispatchers.IO) { // CORRIGIDO BUG1: sondagem de capability não bloqueia o loop principal.
+             val unsupported = linkedSetOf<String>()
+             try {
+                 val cpu = CPU_GOVERNOR_PATHS.any { path ->
+@@ -307,12 +310,13 @@
+         return Operation(true, "Taxa global original restaurada e confirmada (exit 0)")
+     }
+ 
+-    private fun async(callback: Callback, work: () -> Operation) {
+-        executor.execute {
++    private fun async(callback: Callback, work: () -> Operation) { // CORRIGIDO BUG1: todas as operações ShellManager passam por coroutine IO.
++        ioScope.launch(Dispatchers.IO) { // CORRIGIDO BUG1: comando Shizuku nunca executa na Main Thread.
+             val operation = try {
+                 work()
+             } catch (error: Throwable) {
+                 // CORRIGIDO: exceção da operação é registrada e exibida, nunca engolida.
++                Log.e("SHIZUKU_DEBUG", "erro: $error", error) // CORRIGIDO BUG1: erro de shell aparece com a tag exigida.
+                 Log.e(TAG, "Falha na operação assíncrona", error)
+                 Operation(false, error.javaClass.simpleName + ": "
+                     + (error.message ?: "falha desconhecida"))
+@@ -332,6 +336,7 @@
+     /** Toda otimização passa pelo Shizuku; exit code diferente de zero falha. */
+     private fun execute(command: String): CommandResult {
+         Log.d(FLOW_TAG, "SHELL_COMMAND_START $command") // LOG ADICIONADO
++        Log.d("SHIZUKU_DEBUG", "antes de executar: $command") // CORRIGIDO BUG1: registra o início de cada comando remoto.
+         if (!ShizukuBridge.hasPermission()) {
+             val status = ShizukuBridge.status()
+             Log.e(TAG, "Comando não enviado: $status")
+@@ -342,6 +347,7 @@
+             Log.e(TAG, "Comando recusado exit=${result.exitCode}: $command :: ${result.output}")
+         }
+         Log.d(FLOW_TAG, "SHELL_COMMAND_RESULT command=$command exit=${result.exitCode}") // LOG ADICIONADO
++        Log.d("SHIZUKU_DEBUG", "depois de executar: $command exit=${result.exitCode}") // CORRIGIDO BUG1: registra o retorno do comando remoto.
+         return CommandResult(result.ok, result.output, result.exitCode)
+     }
+ 
+diff -ruN /home/user/orig_r12/app/src/main/kotlin/painel/sensi/santos/ShizukuManager.kt /home/user/work_r12/app/src/main/kotlin/painel/sensi/santos/ShizukuManager.kt
+--- /home/user/orig_r12/app/src/main/kotlin/painel/sensi/santos/ShizukuManager.kt	2026-09-10 22:08:00.000000000 +0000
++++ /home/user/work_r12/app/src/main/kotlin/painel/sensi/santos/ShizukuManager.kt	2026-09-11 22:38:34.604727987 +0000
+@@ -1,43 +1,71 @@
+-package painel.sensi.santos
++package painel.sensi.santos // CORRIGIDO BUG1: concentra toda execução remota em Dispatchers.IO.
+ 
+-import android.os.Handler
+-import android.os.Looper
+-import kotlinx.coroutines.CoroutineScope
+-import kotlinx.coroutines.Dispatchers
+-import kotlinx.coroutines.SupervisorJob
+-import kotlinx.coroutines.launch
+-
+-/**
+- * Fachada única para as operações do Shizuku.
+- *
+- * Não existe Runtime.exec, ProcessBuilder, su local ou shell local aqui.
+- * ShizukuBridge cria exclusivamente Shizuku.newProcess remoto e devolve
+- * stdout, stderr, exit code e a exceção real ao consumidor.
+- */
+-object ShizukuManager {
+-    interface Callback {
+-        fun onFinished(result: ShizukuBridge.CommandResult)
+-    }
+-
+-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+-    private val main = Handler(Looper.getMainLooper())
+-
+-    @JvmStatic
+-    fun checkPermission(): Boolean = ShizukuBridge.hasPermission()
+-
+-    /** Uso síncrono somente em uma thread de trabalho. */
+-    @JvmStatic
+-    fun execute(command: String): ShizukuBridge.CommandResult =
+-        ShizukuBridge.executeCommand(command)
+-
+-    /** Uso recomendado pela UI: executa sempre em Dispatchers.IO. */
+-    @JvmStatic
+-    fun applyOptimization(command: String, callback: Callback?) {
+-        scope.launch(Dispatchers.IO) {
+-            // ShizukuBridge registra e devolve a exceção real como resultado;
+-            // não há catch genérico nesta camada que possa mascarar a causa.
+-            val result = ShizukuBridge.executeCommand(command)
+-            if (callback != null) main.post { callback.onFinished(result) }
+-        }
+-    }
++import android.os.Handler // CORRIGIDO BUG1: devolve callbacks à Main Looper.
++import android.os.Looper // CORRIGIDO BUG1: evita tocar Views em thread de shell.
++import android.util.Log // CORRIGIDO BUG1: registra exceções de execução/callback.
++import kotlinx.coroutines.CoroutineScope // CORRIGIDO BUG1: mantém escopo controlado do executor.
++import kotlinx.coroutines.Dispatchers // CORRIGIDO BUG1: usa explicitamente IO para shell.
++import kotlinx.coroutines.SupervisorJob // CORRIGIDO BUG1: uma falha não cancela as demais operações.
++import kotlinx.coroutines.launch // CORRIGIDO BUG1: inicia comandos sem bloquear a UI.
++
++/** Fachada única para as operações do Shizuku. */ // CORRIGIDO BUG1: documenta a fronteira segura do executor.
++object ShizukuManager { // CORRIGIDO BUG1: impede executores concorrentes espalhados pelo painel.
++    interface Callback { // CORRIGIDO BUG1: callback legado mantido para compatibilidade.
++        fun onFinished(result: ShizukuBridge.CommandResult) // CORRIGIDO BUG1: resultado chega depois do worker.
++    } // CORRIGIDO BUG1: fecha a interface.
++
++    private const val TAG = "ShizukuManager" // CORRIGIDO BUG1: tag dos erros do executor.
++    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO) // CORRIGIDO BUG1: todos os trabalhos remotos nascem em IO.
++    private val main = Handler(Looper.getMainLooper()) // CORRIGIDO BUG1: callbacks de UI retornam à Main Looper.
++
++    @JvmStatic // CORRIGIDO BUG1: mantém a API Java usada pelo painel.
++    fun checkPermission(): Boolean = ShizukuBridge.hasPermission() // CORRIGIDO BUG1: consulta snapshot sem IPC síncrono na Main.
++
++    /** Uso síncrono somente quando o chamador já está em Dispatchers.IO. */ // CORRIGIDO BUG1: deixa o contrato de thread explícito.
++    @JvmStatic // CORRIGIDO BUG1: mantém compatibilidade com ShellManager.
++    fun execute(command: String): ShizukuBridge.CommandResult { // CORRIGIDO BUG1: captura falha inesperada antes de retornar ao painel.
++        return try { // CORRIGIDO BUG1: nenhuma exceção escapa para a UI.
++            ShizukuBridge.executeCommand(command) // CORRIGIDO BUG1: ponte rejeita chamada na Main Thread.
++        } catch (error: Throwable) { // CORRIGIDO BUG1: trata binder/processo morto sem crash.
++            Log.e(TAG, "erro: ${error.javaClass.simpleName}: ${error.message ?: "falha desconhecida"}", error) // CORRIGIDO BUG1: registra a causa real.
++            ShizukuBridge.CommandResult(false, -1, "", error.message ?: "Falha ao executar comando Shizuku") // CORRIGIDO BUG1: devolve erro amigável ao consumidor.
++        } // CORRIGIDO BUG1: fecha o try/catch.
++    } // CORRIGIDO BUG1: fecha a execução protegida.
++
++    /** Executa um bloco remoto em IO e nunca deixa uma exceção escapar ao loop principal. */ // CORRIGIDO BUG1: usado pelos métodos Java assíncronos da ponte.
++    @JvmStatic // CORRIGIDO BUG1: disponibiliza o worker para Java.
++    fun launchIo(name: String, work: Runnable) { // CORRIGIDO BUG1: substitui new Thread por Coroutine Dispatchers.IO.
++        scope.launch(Dispatchers.IO) { // CORRIGIDO BUG1: shell nunca roda na Main Thread.
++            try { // CORRIGIDO BUG1: envolve toda a operação remota.
++                Log.d("SHIZUKU_DEBUG", "antes de executar: $name") // CORRIGIDO BUG1: log obrigatório antes do comando.
++                work.run() // CORRIGIDO BUG1: executa o processo remoto no worker.
++                Log.d("SHIZUKU_DEBUG", "depois de executar: $name") // CORRIGIDO BUG1: log obrigatório após a operação.
++            } catch (error: Throwable) { // CORRIGIDO BUG1: binder morto/erro de processo vira resultado do chamador.
++                Log.e("SHIZUKU_DEBUG", "erro: $error", error) // CORRIGIDO BUG1: log obrigatório com a exceção.
++                Log.e(TAG, "Falha no worker Shizuku: $name", error) // CORRIGIDO BUG1: mantém diagnóstico nominal do worker.
++            } // CORRIGIDO BUG1: fecha o tratamento do worker.
++        } // CORRIGIDO BUG1: fecha a coroutine IO.
++    } // CORRIGIDO BUG1: fecha o lançador seguro.
++
++    /** Uso recomendado pela UI: executa sempre em Dispatchers.IO. */ // CORRIGIDO BUG1: evita bloqueio/ANR no painel.
++    @JvmStatic // CORRIGIDO BUG1: mantém a chamada Java.
++    fun applyOptimization(command: String, callback: Callback?) { // CORRIGIDO BUG1: encapsula comando e retorno em coroutine.
++        scope.launch(Dispatchers.IO) { // CORRIGIDO BUG1: comando remoto fora da Main Thread.
++            val result = try { // CORRIGIDO BUG1: captura falhas de execução.
++                Log.d("SHIZUKU_DEBUG", "antes de executar: $command") // CORRIGIDO BUG1: log obrigatório antes do comando.
++                val value = ShizukuBridge.executeCommand(command) // CORRIGIDO BUG1: executa no worker IO.
++                Log.d("SHIZUKU_DEBUG", "depois de executar: $command") // CORRIGIDO BUG1: log obrigatório depois do comando.
++                value // CORRIGIDO BUG1: entrega o resultado real.
++            } catch (error: Throwable) { // CORRIGIDO BUG1: não deixa exceção matar o painel.
++                Log.e("SHIZUKU_DEBUG", "erro: $error", error) // CORRIGIDO BUG1: registra a exceção obrigatória.
++                ShizukuBridge.CommandResult(false, -1, "", error.message ?: "Falha ao executar comando Shizuku") // CORRIGIDO BUG1: converte falha em resultado amigável.
++            } // CORRIGIDO BUG1: fecha proteção da execução.
++            if (callback != null) { // CORRIGIDO BUG1: evita callback nulo.
++                main.post { // CORRIGIDO BUG1: qualquer View só é tocada na Main Looper.
++                    try { callback.onFinished(result) } // CORRIGIDO BUG1: protege callback tardio.
++                    catch (error: Throwable) { Log.e(TAG, "Callback Shizuku falhou", error) } // CORRIGIDO BUG1: callback não derruba o processo.
++                } // CORRIGIDO BUG1: fecha retorno principal.
++            } // CORRIGIDO BUG1: fecha guarda de callback.
++        } // CORRIGIDO BUG1: fecha coroutine.
++    } // CORRIGIDO BUG1: fecha método assíncrono.
+ }

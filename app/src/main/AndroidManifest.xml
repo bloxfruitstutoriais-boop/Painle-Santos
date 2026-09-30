@@ -1,0 +1,65 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- CORRIGIDO: usado para consultar o estado de conectividade quando o
+         aparelho/firmware expõe a otimização de rede. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- CORRIGIDO: capacidade Android relacionada ao modo Não Perturbe;
+         a alteração efetiva continua sendo executada pelo shell autorizado
+         do Shizuku, pois este permission não é concedido automaticamente. -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Declaração necessária para Settings.System.pointer_speed.
+         Declarar não concede a autorização especial; a API é verificada
+         somente no momento da tentativa e o erro real é exibido. -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+    <!-- CORRIGIDO ALONGAR TELA: conceder via ADB/Shizuku:
+         pm grant painel.sensi.santos android.permission.WRITE_SECURE_SETTINGS -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_launcher"
+        android:roundIcon="@drawable/ic_launcher"
+        android:label="PAINEL SANTOS"
+        android:theme="@style/AppTheme"
+        android:supportsRtl="true">
+        <activity android:name=".ResolutionSetupActivity" android:screenOrientation="portrait" android:exported="false" />
+        <activity android:name=".MainActivity" android:screenOrientation="portrait" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".LicenseLockActivity"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+        <receiver
+            android:name=".OverlayControlReceiver"
+            android:exported="false" />
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"
+            android:multiprocess="false" />
+        <service
+            android:name=".OverlayService"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="floating system utility panel" />
+        </service>
+    </application>
+</manifest>

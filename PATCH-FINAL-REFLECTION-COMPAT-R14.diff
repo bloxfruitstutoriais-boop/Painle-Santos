@@ -1,0 +1,1405 @@
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -18,6 +18,10 @@
+          somente no momento da tentativa e o erro real é exibido. -->
+     <uses-permission android:name="android.permission.WRITE_SETTINGS"
+         tools:ignore="ProtectedPermissions" />
++    <!-- CORRIGIDO ALONGAR TELA: conceder via ADB/Shizuku:
++         pm grant painel.sensi.santos android.permission.WRITE_SECURE_SETTINGS -->
++    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
++        tools:ignore="ProtectedPermissions" />
+     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+ 
+     <application
+--- /dev/null
++++ b/app/src/main/java/painel/sensi/santos/DisplayManagerHelper.java
+@@ -0,0 +1,989 @@
++package painel.sensi.santos;
++
++import android.content.ContentResolver;
++import android.content.Context;
++import android.content.SharedPreferences;
++import android.content.pm.PackageManager;
++import android.graphics.Point;
++import android.hardware.display.DisplayManager;
++import android.os.Build;
++import android.os.Handler;
++import android.os.IBinder;
++import android.os.Looper;
++import android.provider.Settings;
++import android.util.DisplayMetrics;
++import android.util.Log;
++import android.view.Display;
++import android.view.WindowManager;
++
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import java.util.Locale;
++
++/**
++ * Controle do display pelo caminho oficial de IWindowManager.
++ *
++ * O método principal é Reflection + IWindowManager. Shizuku é usado somente
++ * como fallback para wm size/wm density e para os comandos am compat. Não há
++ * uso do subcomando legado de offsets, injeção de input, espelhamento ou transformação de
++ * coordenadas neste componente.
++ */
++public final class DisplayManagerHelper {
++    private static final String TAG = "DISPLAY_DEBUG";
++    private static final String SHIZUKU_TAG = "SHIZUKU_DEBUG";
++    private static final String PREFS_NAME = "santos_display_snapshot";
++    private static final String MISSING = "__MISSING__";
++    private static final int DISPLAY_ID = Display.DEFAULT_DISPLAY;
++    private static final int MIN_DIMENSION = 320;
++    private static final int MIN_DENSITY = 120;
++    private static final int MAX_DENSITY = 640;
++    private static final float MIN_RATIO = 1.50f;
++    private static final float MAX_RATIO = 2.22f;
++    private static final Handler MAIN = new Handler(Looper.getMainLooper());
++    // CORRIGIDO: alguns Androids não implementam a ação am compat list;
++    // a falha da sonda não pode impedir wm size/Reflection, mas fica no diagnóstico.
++    private static volatile String lastCompatDetail = "";
++
++    public enum Preset { DEFAULT, FULLSCREEN, STRETCHED }
++
++    public interface Callback {
++        void onFinished(boolean ok, String message);
++    }
++
++    private static final class PhysicalDisplay {
++        final int realWidth;
++        final int realHeight;
++        final int portraitWidth;
++        final int portraitHeight;
++        final int density;
++        final int rotation;
++
++        PhysicalDisplay(int realWidth, int realHeight, int density, int rotation) {
++            this.realWidth = realWidth;
++            this.realHeight = realHeight;
++            this.portraitWidth = Math.min(realWidth, realHeight);
++            this.portraitHeight = Math.max(realWidth, realHeight);
++            this.density = density;
++            this.rotation = rotation;
++        }
++
++        int[] oriented(int portraitWidth, int portraitHeight) {
++            boolean landscape = rotation == 1 || rotation == 3;
++            return landscape
++                    ? new int[]{portraitHeight, portraitWidth}
++                    : new int[]{portraitWidth, portraitHeight};
++        }
++
++        int[] physicalOriented() {
++            return new int[]{realWidth, realHeight};
++        }
++
++        float physicalRatio() {
++            return portraitWidth <= 0 ? 0f : portraitHeight / (float) portraitWidth;
++        }
++    }
++
++    private static final class RemoteDisplay {
++        final String physicalSize;
++        final String overrideSize;
++        final String physicalDensity;
++        final String overrideDensity;
++        final int currentWidth;
++        final int currentHeight;
++        final int currentDensity;
++
++        RemoteDisplay(String physicalSize, String overrideSize, String physicalDensity,
++                      String overrideDensity, int currentWidth, int currentHeight,
++                      int currentDensity) {
++            this.physicalSize = physicalSize;
++            this.overrideSize = overrideSize;
++            this.physicalDensity = physicalDensity;
++            this.overrideDensity = overrideDensity;
++            this.currentWidth = currentWidth;
++            this.currentHeight = currentHeight;
++            this.currentDensity = currentDensity;
++        }
++    }
++
++    private static final class CompatSnapshot {
++        final boolean known;
++        final boolean aspect;
++        final boolean aspectLarge;
++        final boolean forceResize;
++
++        CompatSnapshot(boolean known, boolean aspect, boolean aspectLarge, boolean forceResize) {
++            this.known = known;
++            this.aspect = aspect;
++            this.aspectLarge = aspectLarge;
++            this.forceResize = forceResize;
++        }
++    }
++
++    private static final class Snapshot {
++        final int physicalWidth;
++        final int physicalHeight;
++        final int physicalDensity;
++        final int rotation;
++        final String originalSize;
++        final String originalDensity;
++        final boolean sizeOverride;
++        final boolean densityOverride;
++        final String cutout;
++        final String policy;
++        final String forceResizable;
++        final CompatSnapshot compat;
++
++        Snapshot(int physicalWidth, int physicalHeight, int physicalDensity, int rotation,
++                 String originalSize, String originalDensity, boolean sizeOverride,
++                 boolean densityOverride, String cutout, String policy,
++                 String forceResizable, CompatSnapshot compat) {
++            this.physicalWidth = physicalWidth;
++            this.physicalHeight = physicalHeight;
++            this.physicalDensity = physicalDensity;
++            this.rotation = rotation;
++            this.originalSize = originalSize;
++            this.originalDensity = originalDensity;
++            this.sizeOverride = sizeOverride;
++            this.densityOverride = densityOverride;
++            this.cutout = cutout;
++            this.policy = policy;
++            this.forceResizable = forceResizable;
++            this.compat = compat;
++        }
++    }
++
++    private static final class ReflectionWindowManager {
++        final Object service;
++        final Method setSize;
++        final Method setDensity;
++        final Method clearSize;
++        final Method clearDensity;
++
++        ReflectionWindowManager(Object service, Method setSize, Method setDensity,
++                                Method clearSize, Method clearDensity) {
++            this.service = service;
++            this.setSize = setSize;
++            this.setDensity = setDensity;
++            this.clearSize = clearSize;
++            this.clearDensity = clearDensity;
++        }
++
++        static ReflectionWindowManager connect() {
++            try {
++                Class<?> serviceManager = Class.forName("android.os.ServiceManager");
++                Object binder = serviceManager.getMethod("getService", String.class)
++                        .invoke(null, "window");
++                if (!(binder instanceof IBinder)) {
++                    Log.w(TAG, "ServiceManager não retornou o binder window");
++                    return null;
++                }
++                Class<?> stub = Class.forName("android.view.IWindowManager$Stub");
++                Object service = stub.getMethod("asInterface", IBinder.class)
++                        .invoke(null, binder);
++                Class<?> iWindowManager = Class.forName("android.view.IWindowManager");
++                Method setSize = iWindowManager.getMethod(
++                        "setForcedDisplaySize", int.class, int.class, int.class);
++                Method setDensity = iWindowManager.getMethod(
++                        "setForcedDisplayDensity", int.class, int.class);
++                Method clearSize = iWindowManager.getMethod(
++                        "clearForcedDisplaySize", int.class);
++                Method clearDensity = iWindowManager.getMethod(
++                        "clearForcedDisplayDensity", int.class);
++                Log.i(TAG, "Reflection IWindowManager OK");
++                return new ReflectionWindowManager(service, setSize, setDensity,
++                        clearSize, clearDensity);
++            } catch (ClassNotFoundException e) {
++                Log.w(TAG, "Reflection indisponível: classe não encontrada", e);
++            } catch (NoSuchMethodException e) {
++                Log.w(TAG, "Reflection indisponível: método não encontrado", e);
++            } catch (IllegalAccessException e) {
++                Log.w(TAG, "Reflection indisponível: acesso recusado", e);
++            } catch (InvocationTargetException e) {
++                Log.w(TAG, "Reflection indisponível: InvocationTargetException", e);
++            } catch (Throwable e) {
++                Log.w(TAG, "Reflection indisponível", e);
++            }
++            return null;
++        }
++
++        boolean setSize(int width, int height) {
++            return invoke(setSize, DISPLAY_ID, width, height);
++        }
++
++        boolean setDensity(int density) {
++            return invoke(setDensity, DISPLAY_ID, density);
++        }
++
++        boolean clearSize() {
++            return invoke(clearSize, DISPLAY_ID);
++        }
++
++        boolean clearDensity() {
++            return invoke(clearDensity, DISPLAY_ID);
++        }
++
++        private boolean invoke(Method method, Object... args) {
++            try {
++                method.invoke(service, args);
++                return true;
++            } catch (InvocationTargetException e) {
++                Log.e(TAG, "IWindowManager rejeitou " + method.getName(), e);
++            } catch (IllegalAccessException | SecurityException e) {
++                Log.e(TAG, "IWindowManager sem acesso a " + method.getName(), e);
++            } catch (Throwable e) {
++                Log.e(TAG, "Falha em " + method.getName(), e);
++            }
++            return false;
++        }
++    }
++
++    private static final class CompatResult {
++        final boolean ok;
++        final String detail;
++
++        CompatResult(boolean ok, String detail) {
++            this.ok = ok;
++            this.detail = detail;
++        }
++    }
++
++    private DisplayManagerHelper() {}
++
++    /** Razão física usada para limitar o slider da interface. */
++    public static float maxSupportedRatio(Context context) {
++        try {
++            return Math.min(MAX_RATIO, Math.max(MIN_RATIO, physicalDisplay(context).physicalRatio()));
++        } catch (Throwable error) {
++            Log.e(TAG, "Falha lendo razão física", error);
++            return MAX_RATIO;
++        }
++    }
++
++    /**
++     * Aplica PADRÃO, TELA CHEIA ou ESTICADO em uma fila Dispatchers.IO.
++     * Todas as mudanças falhas executam rollback do snapshot salvo.
++     */
++    public static void applyStretchPreset(final Context context, final Preset preset,
++                                          final float requestedRatio, final Callback callback) {
++        if (context == null || preset == null) {
++            dispatch(callback, false, "Display: contexto ou preset inválido");
++            return;
++        }
++        ShizukuManager.launchIo("santos-display-" + preset.name(), () -> {
++            Snapshot snapshot = null;
++            boolean changed = false;
++            try {
++                if (!hasSecureSettings(context)) {
++                    dispatch(callback, false, "Conceda WRITE_SECURE_SETTINGS via ADB: "
++                            + "pm grant painel.sensi.santos "
++                            + "android.permission.WRITE_SECURE_SETTINGS");
++                    return;
++                }
++                PhysicalDisplay physical = physicalDisplay(context);
++                if (physical.portraitWidth < MIN_DIMENSION
++                        || physical.portraitHeight < MIN_DIMENSION
++                        || physical.density < MIN_DENSITY) {
++                    dispatch(callback, false, "Display físico inválido ou não suportado");
++                    return;
++                }
++                snapshot = loadOrSaveSnapshot(context, physical);
++
++                if (preset == Preset.DEFAULT) {
++                    if (!clearCore(context, physical)) {
++                        failWithRollback(context, snapshot,
++                                "PADRÃO: resolução/DPI não confirmados", callback);
++                        return;
++                    }
++                    changed = true;
++                    if (!putGlobalInt(context, "display_cutout_mode", 0)
++                            || !deleteGlobal(context, "policy_control")
++                            || !deleteGlobal(context, "force_resizable_activities")) {
++                        failWithRollback(context, snapshot,
++                                "PADRÃO: settings não confirmados", callback);
++                        return;
++                    }
++                    if (!disableCompat(context, "OVERRIDE_MIN_ASPECT_RATIO")
++                            || !disableCompat(context, "OVERRIDE_MIN_ASPECT_RATIO_LARGE")
++                            || !disableCompat(context, "FORCE_RESIZE_APP")) {
++                        failWithRollback(context, snapshot,
++                                "PADRÃO: am compat não confirmado · " + lastCompatDetail, callback);
++                        return;
++                    }
++                    if (!verifyDefault(context, physical)) {
++                        failWithRollback(context, snapshot,
++                                "PADRÃO: leitura final não confirmou o estado", callback);
++                        return;
++                    }
++                    clearSnapshot(context);
++                    dispatch(callback, true,
++                            "PADRÃO aplicado e confirmado · resolução/DPI físicos · sem offsets legados");
++                    return;
++                }
++
++                if (preset == Preset.FULLSCREEN) {
++                    int[] target = physical.physicalOriented();
++                    if (!applyCore(context, target[0], target[1], physical.density)) {
++                        failWithRollback(context, snapshot,
++                                "TELA CHEIA: resolução/DPI não confirmados", callback);
++                        return;
++                    }
++                    changed = true;
++                    if (!putGlobalInt(context, "display_cutout_mode", 1)
++                            || !putGlobalString(context, "policy_control",
++                            "immersive.full=" + context.getPackageName())
++                            || !putGlobalInt(context, "force_resizable_activities", 1)) {
++                        failWithRollback(context, snapshot,
++                                "TELA CHEIA: settings não confirmados", callback);
++                        return;
++                    }
++                    if (!enableCompat(context, "FORCE_RESIZE_APP")) {
++                        failWithRollback(context, snapshot,
++                                "TELA CHEIA: am compat FORCE_RESIZE_APP falhou · "
++                                        + lastCompatDetail, callback);
++                        return;
++                    }
++                    if (!verifyCore(context, target[0], target[1], physical.density)
++                            || !globalEquals(context, "display_cutout_mode", "1")
++                            || !globalEquals(context, "policy_control",
++                            "immersive.full=" + context.getPackageName())
++                            || !globalEquals(context, "force_resizable_activities", "1")) {
++                        failWithRollback(context, snapshot,
++                                "TELA CHEIA: confirmação final falhou", callback);
++                        return;
++                    }
++                    dispatch(callback, true,
++                            "TELA CHEIA aplicada e confirmada · resolução física completa");
++                    return;
++                }
++
++                float ratio = clampRatio(requestedRatio, physical.physicalRatio());
++                int targetHeight = Math.round(physical.portraitWidth * ratio);
++                targetHeight = Math.max(MIN_DIMENSION,
++                        Math.min(physical.portraitHeight, targetHeight));
++                int[] target = physical.oriented(physical.portraitWidth, targetHeight);
++                int targetDensity = clampDensity(Math.round(physical.density
++                        * targetHeight / (float) physical.portraitHeight));
++                Log.d(TAG, "ESTICADO formula L=" + physical.portraitWidth
++                        + " H=" + physical.portraitHeight + " ratio=" + formatRatio(ratio)
++                        + " target=" + target[0] + "x" + target[1]
++                        + " density=" + targetDensity);
++                if (!applyCore(context, target[0], target[1], targetDensity)) {
++                    failWithRollback(context, snapshot,
++                            "ESTICADO: resolução/DPI não confirmados", callback);
++                    return;
++                }
++                changed = true;
++                if (!putGlobalInt(context, "display_cutout_mode", 1)
++                        || !putGlobalInt(context, "force_resizable_activities", 1)) {
++                    failWithRollback(context, snapshot,
++                            "ESTICADO: settings não confirmados", callback);
++                    return;
++                }
++                if (!enableCompat(context, "OVERRIDE_MIN_ASPECT_RATIO_LARGE")
++                        || !enableCompat(context, "FORCE_RESIZE_APP")) {
++                    failWithRollback(context, snapshot,
++                            "ESTICADO: am compat não confirmado · " + lastCompatDetail, callback);
++                    return;
++                }
++                if (!verifyCore(context, target[0], target[1], targetDensity)
++                        || !globalEquals(context, "display_cutout_mode", "1")
++                        || !globalEquals(context, "force_resizable_activities", "1")) {
++                    failWithRollback(context, snapshot,
++                            "ESTICADO: leitura final não confirmou o estado", callback);
++                    return;
++                }
++                dispatch(callback, true, "ESTICADO aplicado e confirmado · razão "
++                        + formatRatio(ratio) + " · " + target[0] + "x" + target[1]
++                        + " @ " + targetDensity + " dpi · preenchimento sem letterbox");
++            } catch (Throwable error) {
++                Log.e(TAG, "Falha no preset; rollback automático", error);
++                failWithRollback(context, snapshot,
++                        "Display: " + error.getClass().getSimpleName() + " · "
++                                + safeMessage(error), callback);
++            }
++        });
++    }
++
++    /** Captura explícita para o botão legado de salvar estado. */
++    public static void captureSnapshot(final Context context, final Callback callback) {
++        if (context == null) {
++            dispatch(callback, false, "Display: contexto inválido");
++            return;
++        }
++        ShizukuManager.launchIo("santos-display-snapshot", () -> {
++            try {
++                if (!hasSecureSettings(context)) {
++                    dispatch(callback, false, "WRITE_SECURE_SETTINGS não concedida");
++                    return;
++                }
++                Snapshot snapshot = loadOrSaveSnapshot(context, physicalDisplay(context));
++                dispatch(callback, true, "Snapshot original salvo · "
++                        + snapshot.originalSize + " · " + snapshot.originalDensity + " dpi");
++            } catch (Throwable error) {
++                Log.e(TAG, "Falha salvando snapshot", error);
++                dispatch(callback, false, "Snapshot: " + safeMessage(error));
++            }
++        });
++    }
++
++    private static PhysicalDisplay physicalDisplay(Context context) {
++        try {
++            DisplayManager manager = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
++            Display display = manager == null ? null : manager.getDisplay(DISPLAY_ID);
++            if (display == null) {
++                WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
++                display = wm == null ? null : wm.getDefaultDisplay();
++            }
++            if (display == null) throw new IllegalStateException("Display padrão indisponível");
++            Point real = new Point();
++            display.getRealSize(real);
++            DisplayMetrics metrics = new DisplayMetrics();
++            display.getRealMetrics(metrics);
++            return new PhysicalDisplay(real.x, real.y, metrics.densityDpi, display.getRotation());
++        } catch (Throwable error) {
++            Log.e(TAG, "Falha lendo display físico", error);
++            throw new IllegalStateException("Display físico indisponível", error);
++        }
++    }
++
++    private static boolean hasSecureSettings(Context context) {
++        try {
++            return context.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS")
++                    == PackageManager.PERMISSION_GRANTED;
++        } catch (Throwable error) {
++            Log.e(TAG, "WRITE_SECURE_SETTINGS não concedida", error);
++            return false;
++        }
++    }
++
++    private static int clampDensity(int value) {
++        return Math.max(MIN_DENSITY, Math.min(MAX_DENSITY, value));
++    }
++
++    private static float clampRatio(float requested, float physicalRatio) {
++        float maximum = Math.min(MAX_RATIO, Math.max(MIN_RATIO, physicalRatio));
++        if (Float.isNaN(requested) || Float.isInfinite(requested)) requested = 1.99f;
++        return Math.max(MIN_RATIO, Math.min(maximum, requested));
++    }
++
++    private static String formatRatio(float value) {
++        return String.format(Locale.US, "%.2f", value);
++    }
++
++    private static boolean applyCore(Context context, int width, int height, int density) {
++        ReflectionWindowManager reflection = ReflectionWindowManager.connect();
++        if (reflection != null && hasSecureSettings(context)) {
++            boolean size = reflection.setSize(width, height);
++            boolean dpi = size && reflection.setDensity(density);
++            if (size && dpi && verifyCore(context, width, height, density)) {
++                Log.i(TAG, "CORE aplicado por Reflection IWindowManager");
++                return true;
++            }
++            Log.w(TAG, "Reflection parcial/não confirmada; tentando fallback Shizuku");
++        }
++        if (!ShizukuBridge.hasPermission()) {
++            Log.e(TAG, "Fallback indisponível: " + ShizukuBridge.status());
++            return false;
++        }
++        ShizukuBridge.CommandResult size = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"wm", "size", width + "x" + height});
++        if (!size.ok) return false;
++        ShizukuBridge.CommandResult dpi = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"wm", "density", String.valueOf(density)});
++        return dpi.ok && verifyCore(context, width, height, density);
++    }
++
++    private static boolean clearCore(Context context, PhysicalDisplay physical) {
++        ReflectionWindowManager reflection = ReflectionWindowManager.connect();
++        if (reflection != null && hasSecureSettings(context)) {
++            boolean size = reflection.clearSize();
++            boolean dpi = size && reflection.clearDensity();
++            int[] target = physical.physicalOriented();
++            if (size && dpi && verifyCore(context, target[0], target[1], physical.density)) {
++                Log.i(TAG, "CORE restaurado por Reflection IWindowManager");
++                return true;
++            }
++            Log.w(TAG, "Reflection clear parcial/não confirmado; tentando fallback Shizuku");
++        }
++        if (!ShizukuBridge.hasPermission()) return false;
++        ShizukuBridge.CommandResult size = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"wm", "size", "reset"});
++        if (!size.ok) return false;
++        ShizukuBridge.CommandResult dpi = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"wm", "density", "reset"});
++        int[] target = physical.physicalOriented();
++        return dpi.ok && verifyCore(context, target[0], target[1], physical.density);
++    }
++
++    private static boolean verifyDefault(Context context, PhysicalDisplay physical) {
++        int[] target = physical.physicalOriented();
++        return verifyCore(context, target[0], target[1], physical.density)
++                && globalEquals(context, "display_cutout_mode", "0")
++                && globalMissing(context, "policy_control")
++                && globalMissing(context, "force_resizable_activities");
++    }
++
++    private static boolean verifyCore(Context context, int width, int height, int density) {
++        for (int i = 0; i < 8; i++) {
++            Display current = defaultDisplay(context);
++            if (current != null) {
++                Point size = new Point();
++                DisplayMetrics metrics = new DisplayMetrics();
++                try {
++                    current.getSize(size);
++                    current.getMetrics(metrics);
++                    if (sameSize(size.x, size.y, width, height)
++                            && Math.abs(metrics.densityDpi - density) <= 1) return true;
++                } catch (Throwable error) {
++                    Log.w(TAG, "Confirmação local falhou", error);
++                }
++            }
++            try { Thread.sleep(150L); } catch (InterruptedException e) {
++                Thread.currentThread().interrupt();
++                return false;
++            }
++        }
++        if (!ShizukuBridge.hasPermission()) return false;
++        RemoteDisplay remote = readRemoteDisplay();
++        return remote != null && sameSize(remote.currentWidth, remote.currentHeight, width, height)
++                && remote.currentDensity == density;
++    }
++
++    private static Display defaultDisplay(Context context) {
++        try {
++            DisplayManager manager = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
++            if (manager != null) {
++                Display display = manager.getDisplay(DISPLAY_ID);
++                if (display != null) return display;
++            }
++            WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
++            return wm == null ? null : wm.getDefaultDisplay();
++        } catch (Throwable error) {
++            return null;
++        }
++    }
++
++    private static RemoteDisplay readRemoteDisplay() {
++        try {
++            ShizukuBridge.CommandResult size = ShizukuBridge.executeArgvForDisplay(
++                    new String[]{"wm", "size"});
++            ShizukuBridge.CommandResult density = ShizukuBridge.executeArgvForDisplay(
++                    new String[]{"wm", "density"});
++            if (!size.ok || !density.ok) return null;
++            String physicalSize = extract(size.stdout, "Physical size:");
++            String overrideSize = extract(size.stdout, "Override size:");
++            String physicalDensity = extract(density.stdout, "Physical density:");
++            String overrideDensity = extract(density.stdout, "Override density:");
++            int[] currentSize = parseSize(overrideSize.isEmpty() ? physicalSize : overrideSize);
++            int currentDensity = parseInt(overrideDensity.isEmpty()
++                    ? physicalDensity : overrideDensity);
++            if (currentSize[0] <= 0 || currentSize[1] <= 0 || currentDensity <= 0) return null;
++            return new RemoteDisplay(physicalSize, overrideSize, physicalDensity,
++                    overrideDensity, currentSize[0], currentSize[1], currentDensity);
++        } catch (Throwable error) {
++            Log.e(TAG, "Leitura remota do display falhou", error);
++            return null;
++        }
++    }
++
++    private static Snapshot loadOrSaveSnapshot(Context context, PhysicalDisplay physical) {
++        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
++        if (prefs.getBoolean("saved", false)) return fromPreferences(prefs, physical);
++
++        RemoteDisplay remote = readRemoteDisplay();
++        if (remote == null) {
++            if (!ShizukuBridge.hasPermission()) {
++                throw new IllegalStateException("Não foi possível ler wm size/density antes do snapshot");
++            }
++            throw new IllegalStateException("wm size/density retornaram valores inválidos");
++        }
++        CompatSnapshot compat = readCompatSnapshot(context);
++        // CORRIGIDO: `am compat list` é somente uma sonda diagnóstica. Em AOSP
++        // Android 11–16 ela pode retornar exit=255 porque a ação list não existe;
++        // isso não pode bloquear a aplicação da resolução pelo CAT/Reflection.
++        String originalSize = remote.overrideSize.isEmpty()
++                ? "reset" : remote.overrideSize;
++        String originalDensity = remote.overrideDensity.isEmpty()
++                ? "reset" : remote.overrideDensity;
++        String cutout = readGlobal(context, "display_cutout_mode");
++        String policy = readGlobalOrMissing(context, "policy_control");
++        String force = readGlobalOrMissing(context, "force_resizable_activities");
++        Snapshot snapshot = new Snapshot(physical.portraitWidth, physical.portraitHeight,
++                physical.density, physical.rotation, originalSize, originalDensity,
++                !remote.overrideSize.isEmpty(), !remote.overrideDensity.isEmpty(), cutout,
++                policy, force, compat);
++        SharedPreferences.Editor editor = prefs.edit().clear()
++                .putBoolean("saved", true)
++                .putInt("physical_width", snapshot.physicalWidth)
++                .putInt("physical_height", snapshot.physicalHeight)
++                .putInt("physical_density", snapshot.physicalDensity)
++                .putInt("rotation", snapshot.rotation)
++                .putString("original_size", snapshot.originalSize)
++                .putString("original_density", snapshot.originalDensity)
++                .putBoolean("size_override", snapshot.sizeOverride)
++                .putBoolean("density_override", snapshot.densityOverride)
++                .putString("cutout", snapshot.cutout)
++                .putString("policy", snapshot.policy)
++                .putString("force_resizable", snapshot.forceResizable)
++                .putBoolean("compat_known", compat.known)
++                .putBoolean("compat_aspect", compat.aspect)
++                .putBoolean("compat_aspect_large", compat.aspectLarge)
++                .putBoolean("compat_force_resize", compat.forceResize);
++        if (!editor.commit()) throw new IllegalStateException("Snapshot original não foi salvo");
++        Log.d(TAG, "SNAPSHOT original salvo size=" + originalSize + " density=" + originalDensity);
++        return snapshot;
++    }
++
++    private static Snapshot fromPreferences(SharedPreferences prefs, PhysicalDisplay fallback) {
++        return new Snapshot(
++                prefs.getInt("physical_width", fallback.portraitWidth),
++                prefs.getInt("physical_height", fallback.portraitHeight),
++                prefs.getInt("physical_density", fallback.density),
++                prefs.getInt("rotation", fallback.rotation),
++                prefs.getString("original_size", "reset"),
++                prefs.getString("original_density", "reset"),
++                prefs.getBoolean("size_override", false),
++                prefs.getBoolean("density_override", false),
++                prefs.getString("cutout", "0"),
++                prefs.getString("policy", MISSING),
++                prefs.getString("force_resizable", MISSING),
++                new CompatSnapshot(prefs.getBoolean("compat_known", false),
++                        prefs.getBoolean("compat_aspect", false),
++                        prefs.getBoolean("compat_aspect_large", false),
++                        prefs.getBoolean("compat_force_resize", false)));
++    }
++
++    private static CompatSnapshot readCompatSnapshot(Context context) {
++        if (Build.VERSION.SDK_INT < 30) return new CompatSnapshot(true, false, false, false);
++        if (!ShizukuBridge.hasPermission()) return new CompatSnapshot(false, false, false, false);
++        ShizukuBridge.CommandResult list = compatList(context);
++        if (!list.ok) {
++            Log.w(SHIZUKU_TAG, "am compat list não suportado/retornou exit="
++                    + list.exitCode + " stdout=" + compact(list.stdout)
++                    + " stderr=" + compact(list.stderr));
++            return new CompatSnapshot(false, false, false, false);
++        }
++        return new CompatSnapshot(true,
++                compatEnabled(list.output, "OVERRIDE_MIN_ASPECT_RATIO"),
++                compatEnabled(list.output, "OVERRIDE_MIN_ASPECT_RATIO_LARGE"),
++                compatEnabled(list.output, "FORCE_RESIZE_APP"));
++    }
++
++    private static CompatResult compat(Context context, String operation, String rule) {
++        if (Build.VERSION.SDK_INT < 30) return new CompatResult(true, "não aplicável");
++        if (!ShizukuBridge.hasPermission()) {
++            return new CompatResult(false, "Shizuku indisponível");
++        }
++        // CORRIGIDO: a sonda `list` é registrada, mas não bloqueia a ação
++        // válida. O exit code decisivo é o do enable/disable real.
++        ShizukuBridge.CommandResult list = compatList(context);
++        String probe = list.ok ? "list exit=0" : "list exit=" + list.exitCode
++                + " stderr=" + compact(list.stderr);
++        Log.d(SHIZUKU_TAG, "am compat probe package=" + context.getPackageName()
++                + " " + probe);
++        ShizukuBridge.CommandResult result = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"am", "compat", operation, rule, context.getPackageName()});
++        if (!result.ok) {
++            lastCompatDetail = "am compat " + operation + " " + rule
++                    + " stdout=" + compact(result.stdout) + " stderr="
++                    + compact(result.stderr) + " exit=" + result.exitCode;
++            Log.e(SHIZUKU_TAG, lastCompatDetail);
++            return new CompatResult(false, lastCompatDetail);
++        }
++        lastCompatDetail = probe + " · am compat " + operation + " " + rule + " exit=0";
++        Log.d(SHIZUKU_TAG, lastCompatDetail);
++        return new CompatResult(true, lastCompatDetail);
++    }
++
++    private static ShizukuBridge.CommandResult compatList(Context context) {
++        return ShizukuBridge.executeArgvForDisplay(
++                new String[]{"am", "compat", "list", context.getPackageName()});
++    }
++
++    private static boolean enableCompat(Context context, String rule) {
++        return compat(context, "enable", rule).ok;
++    }
++
++    private static boolean disableCompat(Context context, String rule) {
++        return compat(context, "disable", rule).ok;
++    }
++
++    private static boolean restoreCompat(Context context, CompatSnapshot snapshot) {
++        if (Build.VERSION.SDK_INT < 30 || snapshot == null || !snapshot.known) return false;
++        return (snapshot.aspect ? enableCompat(context, "OVERRIDE_MIN_ASPECT_RATIO")
++                : disableCompat(context, "OVERRIDE_MIN_ASPECT_RATIO"))
++                && (snapshot.aspectLarge ? enableCompat(context, "OVERRIDE_MIN_ASPECT_RATIO_LARGE")
++                : disableCompat(context, "OVERRIDE_MIN_ASPECT_RATIO_LARGE"))
++                && (snapshot.forceResize ? enableCompat(context, "FORCE_RESIZE_APP")
++                : disableCompat(context, "FORCE_RESIZE_APP"));
++    }
++
++    private static boolean compatEnabled(String output, String rule) {
++        String lower = output == null ? "" : output.toLowerCase(Locale.US);
++        String token = rule.toLowerCase(Locale.US);
++        int index = lower.indexOf(token);
++        if (index < 0) return false;
++        String nearby = lower.substring(index, Math.min(lower.length(), index + token.length() + 80));
++        return !nearby.contains("disabled") && !nearby.contains("false");
++    }
++
++    private static void failWithRollback(Context context, Snapshot snapshot,
++                                         String message, Callback callback) {
++        boolean rollback = snapshot != null && rollback(context, snapshot);
++        dispatch(callback, false, message + " · rollback=" + (rollback ? "confirmado" : "falhou"));
++    }
++
++    private static boolean rollback(Context context, Snapshot snapshot) {
++        try {
++            PhysicalDisplay physical = physicalDisplay(context);
++            boolean sizeOk;
++            boolean densityOk;
++            if (snapshot.sizeOverride && validSize(snapshot.originalSize)) {
++                int[] size = parseSize(snapshot.originalSize);
++                sizeOk = applySizeOnly(context, size[0], size[1]);
++            } else {
++                sizeOk = clearSizeOnly(context, physical);
++            }
++            if (snapshot.densityOverride && validNumber(snapshot.originalDensity)) {
++                densityOk = applyDensityOnly(context, parseInt(snapshot.originalDensity));
++            } else {
++                densityOk = clearDensityOnly(context, physical);
++            }
++            boolean settings = restoreGlobal(context, "display_cutout_mode", snapshot.cutout)
++                    && restoreGlobal(context, "policy_control", snapshot.policy)
++                    && restoreGlobal(context, "force_resizable_activities", snapshot.forceResizable);
++            boolean compat = restoreCompat(context, snapshot.compat);
++            boolean core = sizeOk && densityOk;
++            if (core && validSize(snapshot.originalSize) && validNumber(snapshot.originalDensity)) {
++                int[] size = parseSize(snapshot.originalSize);
++                core = verifyCore(context, size[0], size[1], parseInt(snapshot.originalDensity));
++            }
++            Log.d(TAG, "ROLLBACK core=" + core + " settings=" + settings + " compat=" + compat);
++            return core && settings && compat;
++        } catch (Throwable error) {
++            Log.e(TAG, "Rollback automático falhou", error);
++            return false;
++        }
++    }
++
++    private static boolean applySizeOnly(Context context, int width, int height) {
++        ReflectionWindowManager reflection = ReflectionWindowManager.connect();
++        if (reflection != null && hasSecureSettings(context)
++                && reflection.setSize(width, height)
++                && verifySize(context, width, height)) return true;
++        if (!ShizukuBridge.hasPermission()) return false;
++        ShizukuBridge.CommandResult result = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"wm", "size", width + "x" + height});
++        return result.ok && verifySizeRemote(width, height);
++    }
++
++    private static boolean applyDensityOnly(Context context, int density) {
++        ReflectionWindowManager reflection = ReflectionWindowManager.connect();
++        if (reflection != null && hasSecureSettings(context)
++                && reflection.setDensity(density) && verifyDensity(context, density)) return true;
++        if (!ShizukuBridge.hasPermission()) return false;
++        ShizukuBridge.CommandResult result = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"wm", "density", String.valueOf(density)});
++        return result.ok && verifyDensityRemote(density);
++    }
++
++    private static boolean clearSizeOnly(Context context, PhysicalDisplay physical) {
++        ReflectionWindowManager reflection = ReflectionWindowManager.connect();
++        int[] target = physical.physicalOriented();
++        if (reflection != null && hasSecureSettings(context)
++                && reflection.clearSize() && verifySize(context, target[0], target[1])) return true;
++        if (!ShizukuBridge.hasPermission()) return false;
++        ShizukuBridge.CommandResult result = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"wm", "size", "reset"});
++        return result.ok && verifySizeRemote(target[0], target[1]);
++    }
++
++    private static boolean clearDensityOnly(Context context, PhysicalDisplay physical) {
++        ReflectionWindowManager reflection = ReflectionWindowManager.connect();
++        if (reflection != null && hasSecureSettings(context)
++                && reflection.clearDensity() && verifyDensity(context, physical.density)) return true;
++        if (!ShizukuBridge.hasPermission()) return false;
++        ShizukuBridge.CommandResult result = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"wm", "density", "reset"});
++        return result.ok && verifyDensityRemote(physical.density);
++    }
++
++    private static boolean verifySize(Context context, int width, int height) {
++        for (int i = 0; i < 8; i++) {
++            Display display = defaultDisplay(context);
++            if (display != null) {
++                try {
++                    Point size = new Point();
++                    display.getSize(size);
++                    if (sameSize(size.x, size.y, width, height)) return true;
++                } catch (Throwable error) {
++                    Log.w(TAG, "Confirmação de tamanho falhou", error);
++                }
++            }
++            sleepForConfirmation();
++        }
++        return verifySizeRemote(width, height);
++    }
++
++    private static boolean verifyDensity(Context context, int density) {
++        for (int i = 0; i < 8; i++) {
++            Display display = defaultDisplay(context);
++            if (display != null) {
++                try {
++                    DisplayMetrics metrics = new DisplayMetrics();
++                    display.getMetrics(metrics);
++                    if (Math.abs(metrics.densityDpi - density) <= 1) return true;
++                } catch (Throwable error) {
++                    Log.w(TAG, "Confirmação de densidade falhou", error);
++                }
++            }
++            sleepForConfirmation();
++        }
++        return verifyDensityRemote(density);
++    }
++
++    private static void sleepForConfirmation() {
++        try { Thread.sleep(150L); } catch (InterruptedException e) {
++            Thread.currentThread().interrupt();
++        }
++    }
++
++    private static boolean verifySizeRemote(int width, int height) {
++        RemoteDisplay remote = readRemoteDisplay();
++        return remote != null && sameSize(remote.currentWidth, remote.currentHeight, width, height);
++    }
++
++    private static boolean verifyDensityRemote(int density) {
++        RemoteDisplay remote = readRemoteDisplay();
++        return remote != null && remote.currentDensity == density;
++    }
++
++    private static boolean sameSize(int firstWidth, int firstHeight,
++                                    int secondWidth, int secondHeight) {
++        return (firstWidth == secondWidth && firstHeight == secondHeight)
++                || (firstWidth == secondHeight && firstHeight == secondWidth);
++    }
++
++    private static boolean putGlobalInt(Context context, String name, int value) {
++        return putGlobalString(context, name, String.valueOf(value));
++    }
++
++    private static boolean putGlobalString(Context context, String name, String value) {
++        if (!hasSecureSettings(context)) return false;
++        try {
++            ContentResolver resolver = context.getContentResolver();
++            boolean result = Settings.Global.putString(resolver, name, value);
++            if (result && globalEquals(context, name, value)) return true;
++        } catch (Throwable error) {
++            Log.e(TAG, "Settings.Global.put falhou: " + name, error);
++        }
++        if (!ShizukuBridge.hasPermission()) return false;
++        ShizukuBridge.CommandResult shell = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"settings", "put", "global", name, value});
++        return shell.ok && globalEquals(context, name, value);
++    }
++
++    private static boolean deleteGlobal(Context context, String name) {
++        if (!hasSecureSettings(context)) return false;
++        try {
++            ContentResolver resolver = context.getContentResolver();
++            resolver.delete(Settings.Global.CONTENT_URI, "name=?", new String[]{name});
++            if (globalMissing(context, name)) return true;
++        } catch (Throwable error) {
++            Log.e(TAG, "Settings.Global.delete falhou: " + name, error);
++        }
++        if (!ShizukuBridge.hasPermission()) return false;
++        ShizukuBridge.CommandResult shell = ShizukuBridge.executeArgvForDisplay(
++                new String[]{"settings", "delete", "global", name});
++        return shell.ok && globalMissing(context, name);
++    }
++
++    private static boolean restoreGlobal(Context context, String name, String value) {
++        return MISSING.equals(value) ? deleteGlobal(context, name)
++                : putGlobalString(context, name, value);
++    }
++
++    private static String readGlobal(Context context, String name) {
++        try {
++            String value = Settings.Global.getString(context.getContentResolver(), name);
++            return value == null ? "" : value;
++        } catch (Throwable error) {
++            Log.e(TAG, "Falha lendo global " + name, error);
++            return "";
++        }
++    }
++
++    private static String readGlobalOrMissing(Context context, String name) {
++        String value = readGlobal(context, name);
++        return value.isEmpty() ? MISSING : value;
++    }
++
++    private static boolean globalEquals(Context context, String name, String expected) {
++        return expected.equals(readGlobal(context, name));
++    }
++
++    private static boolean globalMissing(Context context, String name) {
++        return readGlobal(context, name).isEmpty();
++    }
++
++    private static String extract(String output, String label) {
++        if (output == null) return "";
++        for (String line : output.split("\\R")) {
++            String trimmed = line.trim();
++            if (trimmed.startsWith(label)) return trimmed.substring(label.length()).trim();
++        }
++        return "";
++    }
++
++    private static int[] parseSize(String value) {
++        if (!validSize(value)) return new int[]{0, 0};
++        String[] parts = value.split("x", 2);
++        return new int[]{parseInt(parts[0]), parseInt(parts[1])};
++    }
++
++    private static boolean validSize(String value) {
++        return value != null && value.matches("\\d{3,5}x\\d{3,5}");
++    }
++
++    private static boolean validNumber(String value) {
++        return value != null && value.matches("\\d{1,4}");
++    }
++
++    private static int parseInt(String value) {
++        try { return Integer.parseInt(value == null ? "" : value); }
++        catch (NumberFormatException ignored) { return 0; }
++    }
++
++    private static String compact(String value) {
++        if (value == null) return "";
++        String text = value.replaceAll("\\s+", " ").trim();
++        return text.length() <= 240 ? text : text.substring(0, 239) + "…";
++    }
++
++    private static String safeMessage(Throwable error) {
++        String message = error == null ? "falha desconhecida" : error.getMessage();
++        return message == null || message.trim().isEmpty()
++                ? "falha desconhecida" : compact(message);
++    }
++
++    private static void clearSnapshot(Context context) {
++        try {
++            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
++                    .edit().clear().apply();
++        } catch (Throwable error) {
++            Log.w(TAG, "Falha limpando snapshot", error);
++        }
++    }
++
++    private static void dispatch(final Callback callback, final boolean ok,
++                                 final String message) {
++        if (callback == null) return;
++        MAIN.post(() -> {
++            try {
++                callback.onFinished(ok, message);
++            } catch (Throwable error) {
++                Log.e(TAG, "Callback do display falhou", error);
++            }
++        });
++    }
++}
+--- a/app/src/main/java/painel/sensi/santos/ShizukuBridge.java
++++ b/app/src/main/java/painel/sensi/santos/ShizukuBridge.java
+@@ -363,6 +363,12 @@
+         }
+     }
+ 
++    // CORRIGIDO ALONGAR TELA: ponto package-scoped para o fallback do helper.
++    // A checagem pingBinder/permissão continua dentro do executor antes de cada processo.
++    static CommandResult executeArgvForDisplay(String[] command) {
++        return executeArgv(command);
++    }
++
+     private static CommandResult executeArgv(String[] command) {
+         // Um único processo remoto por vez. Isso também serializa as leituras
+         // de confirmação de wm/settings com aplicações e rollbacks.
+@@ -486,6 +492,10 @@
+             if (timedOut) detail = detail.isEmpty() ? "timeout" : detail;
+             recordCommand(printable, exitCode,
+                     detail.isEmpty() ? (exitCode == 0 ? "sucesso" : "sem saída") : detail);
++            // CORRIGIDO: diagnóstico completo e estruturado solicitado para cada comando.
++            Log.d("SHIZUKU_DEBUG", "resultado command=" + printable
++                    + " stdout=" + summarize(out) + " stderr=" + summarize(err)
++                    + " exit=" + exitCode);
+             if (!err.isEmpty()) Log.e(TAG, "stderr (exit=" + exitCode + ") command=" + printable + " :: " + err);
+             if (exitCode == 0) Log.d(TAG, "OK exit=0 command=" + printable);
+             else Log.e(TAG, "FAILED exit=" + exitCode + " command=" + printable);
+@@ -944,9 +954,8 @@
+         CommandResult displayResult = executeArgv(new String[]{"dumpsys", "display"});
+         int rotation = displayResult.ok ? extractRotation(displayResult.stdout) : -1;
+         /*
+-         * Não sondar "wm overscan" em toda leitura. Em Androids atuais esse
+-         * subcomando não existe e alguns firmwares deixam o processo remoto
+-         * preso por vários segundos. Resolução e DPI não dependem dele.
++         * Não sondar o subcomando legado de offsets em toda leitura. Em
++         * Androids atuais ele não existe e resolução/DPI não dependem dele.
+          */
+         String overscan = "";
+         boolean overscanSupported = false;
+@@ -1125,40 +1134,12 @@
+         }
+     }
+ 
++    // CORRIGIDO ALONGAR TELA: o comando legado de offsets foi removido do
++    // Android 11+ e não participa mais de nenhuma operação. Mantemos a API
++    // somente para que
++    // chamadas antigas recebam uma falha explícita, nunca um falso sucesso.
+     public static void resetOverscan(final Context context, final Callback callback) {
+-        ShizukuManager.launchIo("santos-overscan-reset", () -> { // CORRIGIDO BUG1: reset remoto roda em Coroutine IO.
+-            try {
+-                // CORRIGIDO: autorização é confirmada no worker antes do comando.
+-                if (!hasPermission()) {
+-                    dispatch(callback, false, status());
+-                    return;
+-                }
+-                RawDisplayState before = readRawDisplayState();
+-                if (!before.overscanSupported) {
+-                    dispatch(callback, false, "Overscan não suportado por este firmware.");
+-                    return;
+-                }
+-                SharedPreferences prefs = context.getSharedPreferences("santos_session", Context.MODE_PRIVATE);
+-                saveOriginalDisplayIfNeeded(prefs, before);
+-                CommandResult result = executeArgv(new String[]{"wm", "overscan", "reset"});
+-                RawDisplayState after = result.ok ? readRawDisplayState() : before;
+-                boolean verified = result.ok && after.overscanSupported
+-                        && ("0,0,0,0".equals(after.overscan) || after.overscan.isEmpty());
+-                if (!verified) {
+-                    // CORRIGIDO: se reset não confirmar, devolver overscan original imediatamente.
+-                    restoreOverscanIfSaved(prefs);
+-                    dispatch(callback, false, "Reset overscan não confirmado (exit="
+-                            + result.exitCode + "); estado original restaurado.");
+-                    return;
+-                }
+-                dispatch(callback, true, "Overscan resetado e verificado (exit="
+-                        + result.exitCode + ").");
+-            } catch (Throwable error) {
+-                Log.e(TAG, "Falha resetando overscan", error);
+-                dispatch(callback, false, error.getClass().getSimpleName() + ": "
+-                        + (error.getMessage() == null ? "falha ao resetar overscan" : error.getMessage()));
+-            }
+-        }); // CORRIGIDO BUG1: encerra a coroutine de overscan.
++        dispatch(callback, false, "Overscan não suportado; use Reflection IWindowManager");
+     }
+ 
+     public static void captureDisplayState(final Context context, final Callback callback) {
+@@ -1259,11 +1240,8 @@
+         return a[0] == b[1] && a[1] == b[0];
+     }
+ 
+-    // ADICIONADO: só restaura overscan se ele foi lido e salvo antes pelo app.
++    // CORRIGIDO ALONGAR TELA: não existe restauração pelo caminho legado.
+     private static boolean restoreOverscanIfSaved(SharedPreferences prefs) {
+-        String original = prefs.getString("original_display_overscan", "");
+-        if (original.isEmpty()) return true;
+-        CommandResult result = executeCommand("wm overscan " + original);
+-        return result.ok;
++        return true;
+     }
+ }
+--- a/app/src/main/java/painel/sensi/santos/OverlayService.java
++++ b/app/src/main/java/painel/sensi/santos/OverlayService.java
+@@ -96,7 +96,7 @@
+     private TextView displayReset;
+     private TextView diagnosticDetails;
+     private TextView diagnosticToggle;
+-    // ADICIONADO: botão só é habilitado quando wm overscan é realmente legível.
++    // CORRIGIDO ALONGAR TELA: caminho legado de overscan mantido inativo.
+     private TextView overscanReset;
+     private int physicalDisplayWidth;
+     private int physicalDisplayHeight;
+@@ -159,6 +159,8 @@
+     // Um único toggle dependente do Shizuku por vez evita que callbacks
+     // concorrentes calculem o estado a partir de preferências ainda antigas.
+     private final Set<String> pendingToggleOperations = new HashSet<>();
++    // CORRIGIDO ALONGAR TELA: presets explícitos compartilham o helper Reflection.
++    private final List<TextView> stretchPresetButtons = new ArrayList<>();
+     private final Map<String, Integer> pendingSliderPrevious = new HashMap<>();
+     // O binder pode morrer depois de o painel já estar aberto. Nesse caso a
+     // ponte é invalidada imediatamente; nenhuma função fica habilitada por
+@@ -707,7 +709,7 @@
+                 "0,0x = sem animação · 10,0x = máximo");
+         section(list, "PROPORÇÃO / ESTICAR TELA");
+         addNotice(list, "Aplicação oficial via shell",
+-                "O slider usa wm size e wm density via Shizuku. O resultado e as barras dependem do firmware.");
++                "O slider usa Reflection IWindowManager; Shizuku é fallback e o resultado é confirmado pelo display.");
+         resolutionSave = addRestrictedAction(list, "Salvar resolução/densidade original (Shizuku)", // CORRIGIDO BUG2: ação de sistema fica restrita abaixo de 7 dias.
+                 v -> captureOriginalDisplayState());
+         resolutionRestore = addRestrictedAction(list, "Restaurar resolução/densidade original", // CORRIGIDO BUG2: ação de sistema fica restrita abaixo de 7 dias.
+@@ -752,24 +754,31 @@
+         addRestrictedAction(list, "LER wm size / wm density AGORA", v -> forceReadNativeDisplayInfo()); // CORRIGIDO BUG2: leitura remota exige key com 7+ dias.
+         readNativeDisplayInfo();
+ 
+-        addSlider(list, "Alongar tela", "stretch_percent", 0, 100, 0,
+-                "0% = normal · reduz somente o lado maior; 100% ≈ 1,33x");
++        // CORRIGIDO ALONGAR TELA: razão física 1,50–2,22; 1,99 é o padrão.
++        int savedRatio = prefs.getInt("slider_stretch_percent", 199);
++        if (savedRatio < 150 || savedRatio > 222) {
++            prefs.edit().putInt("slider_stretch_percent", 199).apply();
++        }
++        addSlider(list, "Alongar tela", "stretch_percent", 150, 222, 199,
++                "Razão 1,50–2,22 · toque ESTICADO para aplicar");
+         stretchSlider = sliderViews.get("stretch_percent");
+ 
+         fullscreenStretchToggle = addToggle(list, "▣", "TELA CHEIA / CORTE LATERAL",
+-                "Desligado por padrão. Aplica o fator selecionado usando a resolução nativa e o DPI real lidos por wm.",
++                "Desligado por padrão. Use TELA CHEIA ou ESTICADO para aplicar explicitamente.",
+                 "fullscreen_stretch");
+ 
+-        displayApply = addRestrictedAction(list, "APLICAR resolução / DPI", v -> { // CORRIGIDO BUG2: aplicação de display exige key com 7+ dias.
+-            // CORRIGIDO: o botão é uma confirmação explícita do fator salvo;
+-            // antes ele apenas mostrava uma mensagem quando o switch estava off.
+-            if (stretchSlider != null && stretchSlider.getProgress() > 0
+-                    && fullscreenStretchToggle != null
+-                    && !fullscreenStretchToggle.isChecked()) {
+-                updatingControls = true;
+-                fullscreenStretchToggle.setChecked(true);
+-                updatingControls = false;
+-            }
++        // CORRIGIDO ALONGAR TELA: três ações explícitas, sem caminho legado.
++        TextView defaultPreset = addRestrictedAction(list, "PADRÃO",
++                v -> applyAlongarPreset(DisplayManagerHelper.Preset.DEFAULT));
++        TextView fullscreenPreset = addRestrictedAction(list, "TELA CHEIA",
++                v -> applyAlongarPreset(DisplayManagerHelper.Preset.FULLSCREEN));
++        TextView stretchedPreset = addRestrictedAction(list, "ESTICADO",
++                v -> applyAlongarPreset(DisplayManagerHelper.Preset.STRETCHED));
++        stretchPresetButtons.add(defaultPreset);
++        stretchPresetButtons.add(fullscreenPreset);
++        stretchPresetButtons.add(stretchedPreset);
++
++        displayApply = addRestrictedAction(list, "APLICAR resolução / DPI", v -> {
+             applyDisplayProfileFromUi();
+         });
+         displayReset = addRestrictedAction(list, "RESTAURAR resolução e DPI originais", v -> restoreOriginalDisplayState()); // CORRIGIDO BUG2: restauração de display fica restrita abaixo de 7 dias.
+@@ -777,10 +786,8 @@
+         displayApply.setAlpha(.52f);
+         displayReset.setEnabled(false);
+         displayReset.setAlpha(.52f);
+-        // ADICIONADO: nunca enviar wm overscan quando a capability não foi confirmada.
+-        overscanReset = addRestrictedAction(list, "RESET OVERSCAN (somente se suportado)", v -> resetOverscan()); // CORRIGIDO BUG2: reset remoto fica restrito abaixo de 7 dias.
+-        overscanReset.setEnabled(false);
+-        overscanReset.setAlpha(.52f);
++        // CORRIGIDO ALONGAR TELA: overscan não existe no caminho Android 11+.
++        overscanReset = null;
+     }
+ 
+     private void configureDisplayProfiles(int width, int height, int density) {
+@@ -972,7 +979,46 @@
+                 : new int[]{shortSide, reducedLongSide};
+     }
+ 
++    // CORRIGIDO ALONGAR TELA: cada preset executa em IO e atualiza a UI na Main.
++    private void applyAlongarPreset(final DisplayManagerHelper.Preset preset) {
++        if (destroyed || pendingToggleOperations.contains("alongar_preset")) return;
++        pendingToggleOperations.add("alongar_preset");
++        int sliderValue = 199;
++        if (stretchSlider != null) {
++            Integer min = sliderMins.get("stretch_percent");
++            sliderValue = (min == null ? 150 : min) + stretchSlider.getProgress();
++        }
++        final float ratio = Math.max(1.50f, Math.min(2.22f, sliderValue / 100f));
++        message("Aplicando " + preset.name() + " · razão "
++                + String.format(Locale.US, "%.2f", ratio) + "…");
++        DisplayManagerHelper.applyStretchPreset(this, preset, ratio, (ok, msg) -> {
++            if (destroyed) return;
++            pendingToggleOperations.remove("alongar_preset");
++            pendingToggleOperations.remove("fullscreen_stretch");
++            if (ok) {
++                prefs.edit().putFloat("stretch_ratio", ratio)
++                        .putBoolean("stretch_requested", preset == DisplayManagerHelper.Preset.STRETCHED)
++                        .putBoolean("feature_stretch", preset == DisplayManagerHelper.Preset.STRETCHED)
++                        .putBoolean("feature_fullscreen_stretch", preset == DisplayManagerHelper.Preset.FULLSCREEN)
++                        .apply();
++                if (fullscreenStretchToggle != null) {
++                    updatingControls = true;
++                    fullscreenStretchToggle.setChecked(preset != DisplayManagerHelper.Preset.DEFAULT);
++                    updatingControls = false;
++                }
++                if (displayProfileStatus != null) displayProfileStatus.setText(msg);
++            }
++            postMessage(ok, msg);
++            updateCapabilityStates();
++        });
++    }
++
+     private void applyDisplayProfileFromUi() {
++        // CORRIGIDO ALONGAR TELA: o modo de corte usa o helper Reflection.
++        if (fullscreenStretchToggle != null && fullscreenStretchToggle.isChecked()) {
++            applyAlongarPreset(DisplayManagerHelper.Preset.STRETCHED);
++            return;
++        }
+         // CORRIGIDO: não cancelar no snapshot da Main Thread; applyDisplayProfile
+         // confirma a autorização no worker e devolve o erro real ao painel.
+         if (resolutionProfiles.isEmpty() || densityProfiles.isEmpty()) {
+@@ -1459,16 +1505,11 @@
+                     applySafeSlider(key, current, previous, min, title);
+                     return;
+                 } else if (key.equals("stretch_percent")) {
+-                    if (fullscreenStretchToggle != null && fullscreenStretchToggle.isChecked()) {
+-                        pendingToggleOperations.add(pendingKey);
+-                        applyDisplayProfileFromUi();
+-                    } else {
+-                        // Sem corte lateral não há alteração remota; a escolha
+-                        // fica apenas no controle depois de explicitamente salva.
+-                        prefs.edit().putInt(pendingKey, current).apply();
+-                        pendingSliderPrevious.remove(pendingKey);
+-                        message(title + " salvo; ative TELA CHEIA / CORTE LATERAL para aplicar");
+-                    }
++                    // CORRIGIDO ALONGAR TELA: mover o slider nunca aplica sozinho.
++                    prefs.edit().putInt(pendingKey, current).apply();
++                    pendingSliderPrevious.remove(pendingKey);
++                    message("Razão atual " + String.format(Locale.US, "%.2f", current / 100f)
++                            + " salva; toque ESTICADO para aplicar");
+                     return;
+                 }
+                 prefs.edit().putInt(pendingKey, current).apply();
+@@ -1482,7 +1523,9 @@
+ 
+     private String formatSliderValue(String key, int value) {
+         if (key.equals("animation_scale")) return String.format(Locale.US, "%.1fx", value / 100f);
+-        if (key.equals("stretch_percent")) return value + "%";
++        if (key.equals("stretch_percent")) {
++            return String.format(Locale.US, "%.2f", value / 100f);
++        }
+         return String.valueOf(value);
+     }
+ 
+@@ -1994,11 +2037,18 @@
+         }
+         if (fullscreenStretchToggle != null) {
+             boolean canStretch = licenseAccess
+-                    && !pendingToggleOperations.contains("fullscreen_stretch") // CORRIGIDO: evita concorrência durante aplicação.
+-                    && !pendingToggleOperations.contains("slider_stretch_percent"); // CORRIGIDO: corte lateral não depende de 7 dias.
++                    && !pendingToggleOperations.contains("fullscreen_stretch")
++                    && !pendingToggleOperations.contains("alongar_preset");
+             fullscreenStretchToggle.setEnabled(canStretch);
+             fullscreenStretchToggle.setAlpha(canStretch ? 1f : .52f);
+         }
++        for (TextView preset : stretchPresetButtons) {
++            boolean available = licenseAccess
++                    && !pendingToggleOperations.contains("alongar_preset")
++                    && !pendingToggleOperations.contains("fullscreen_stretch");
++            preset.setEnabled(available);
++            preset.setAlpha(available ? 1f : .52f);
++        }
+         if (refreshApply != null) {
+             boolean canApplyRefresh = licenseAccess && selectedRefreshHz >= 0; // CORRIGIDO: Hz fica clicável para retornar o erro real da ponte.
+             refreshApply.setEnabled(canApplyRefresh);
+@@ -2029,11 +2079,12 @@
+         Log.d(FLOW_TAG, "OVERLAY_TOGGLE key=" + key + " checked=" + checked); // LOG ADICIONADO
+         if (pendingToggleOperations.contains(key)) return;
+         if ("fullscreen_stretch".equals(key)) {
+-            // A resolução só é persistida no callback confirmado de wm.
++            // CORRIGIDO ALONGAR TELA: o toggle usa o mesmo helper dos botões.
+             pendingToggleOperations.add(key);
+             updateCapabilityStates();
+-            if (checked) applyDisplayProfileFromUi();
+-            else restoreOriginalDisplayState();
++            applyAlongarPreset(checked
++                    ? DisplayManagerHelper.Preset.STRETCHED
++                    : DisplayManagerHelper.Preset.DEFAULT);
+             return;
+         }
+         if ("hide_for_capture".equals(key)) {
+@@ -2249,47 +2300,16 @@
+     }
+ 
+     private void captureOriginalDisplayState() {
+-        // CORRIGIDO: captura verifica Shizuku no worker e mostra o resultado real.
+-        ShizukuBridge.captureDisplayState(this, (ok, msg) -> {
++        // CORRIGIDO ALONGAR TELA: snapshot inclui tamanho, DPI, settings e compat.
++        DisplayManagerHelper.captureSnapshot(this, (ok, msg) -> {
+             if (!destroyed) postMessage(ok, msg);
++            updateCapabilityStates();
+         });
+-        if (panel != null) panel.postDelayed(this::updateCapabilityStates, 600);
+     }
+ 
+     private void restoreOriginalDisplayState() {
+-        boolean wasStretchActive = fullscreenStretchToggle != null
+-                && fullscreenStretchToggle.isChecked();
+-        // CORRIGIDO: restauração verifica Shizuku no worker, sem snapshot stale.
+-        ShizukuBridge.restoreDisplayState(this, (ok, msg) -> {
+-            // CORRIGIDO: o callback do Shizuku vem de thread de trabalho; não
+-            // tocar em SeekBar/Switch/estado visual fora da main thread.
+-            if (destroyed) return;
+-            pendingToggleOperations.remove("fullscreen_stretch");
+-            if (ok) {
+-                if (stretchSlider != null) {
+-                    updatingControls = true;
+-                    stretchSlider.setProgress(0);
+-                    updatingControls = false;
+-                }
+-                if (fullscreenStretchToggle != null) {
+-                    updatingControls = true;
+-                    fullscreenStretchToggle.setChecked(false);
+-                    updatingControls = false;
+-                }
+-                prefs.edit().putInt("stretch_percent", 0)
+-                        .remove("slider_stretch_percent")
+-                        .putBoolean("stretch_requested", false)
+-                        .remove("feature_stretch")
+-                        .remove("feature_fullscreen_stretch").apply();
+-            } else if (wasStretchActive && fullscreenStretchToggle != null) {
+-                // CORRIGIDO: mantém o switch ligado se o rollback falhar.
+-                updatingControls = true;
+-                fullscreenStretchToggle.setChecked(true);
+-                updatingControls = false;
+-            }
+-            postMessage(ok, msg);
+-            updateCapabilityStates();
+-        });
++        // CORRIGIDO ALONGAR TELA: PADRÃO restaura Reflection/settings/compat.
++        applyAlongarPreset(DisplayManagerHelper.Preset.DEFAULT);
+     }
+ 
+     private boolean vulkanAvailable() {
+--- a/app/src/main/kotlin/painel/sensi/santos/ShizukuManager.kt
++++ b/app/src/main/kotlin/painel/sensi/santos/ShizukuManager.kt
+@@ -30,7 +30,15 @@
+     @JvmStatic // CORRIGIDO BUG1: mantém compatibilidade com ShellManager.
+     fun execute(command: String): ShizukuBridge.CommandResult { // CORRIGIDO BUG1: captura falha inesperada antes de retornar ao painel.
+         return try { // CORRIGIDO BUG1: nenhuma exceção escapa para a UI.
+-            ShizukuBridge.executeCommand(command) // CORRIGIDO BUG1: ponte rejeita chamada na Main Thread.
++            // CORRIGIDO ALONGAR TELA: pingBinder + permissão são revalidados
++            // antes de cada comando, inclusive am compat do helper.
++            if (!ShizukuBridge.isAvailable()) {
++                ShizukuBridge.CommandResult(false, -1, "", ShizukuBridge.status())
++            } else if (!ShizukuBridge.hasPermission()) {
++                ShizukuBridge.CommandResult(false, -1, "", ShizukuBridge.status())
++            } else {
++                ShizukuBridge.executeCommand(command) // CORRIGIDO BUG1: ponte rejeita chamada na Main Thread.
++            }
+         } catch (error: Throwable) { // CORRIGIDO BUG1: trata binder/processo morto sem crash.
+             Log.e(TAG, "erro: ${error.javaClass.simpleName}: ${error.message ?: "falha desconhecida"}", error) // CORRIGIDO BUG1: registra a causa real.
+             ShizukuBridge.CommandResult(false, -1, "", error.message ?: "Falha ao executar comando Shizuku") // CORRIGIDO BUG1: devolve erro amigável ao consumidor.
+@@ -58,7 +66,11 @@
+         scope.launch { // CORRIGIDO: execução de comandos permanece na fila única.
+             val result = try { // CORRIGIDO BUG1: captura falhas de execução.
+                 Log.d("SHIZUKU_DEBUG", "antes de executar: $command") // CORRIGIDO BUG1: log obrigatório antes do comando.
+-                val value = ShizukuBridge.executeCommand(command) // CORRIGIDO BUG1: executa no worker IO.
++                val value = if (!ShizukuBridge.isAvailable() || !ShizukuBridge.hasPermission()) {
++                    ShizukuBridge.CommandResult(false, -1, "", ShizukuBridge.status())
++                } else {
++                    ShizukuBridge.executeCommand(command) // CORRIGIDO BUG1: executa no worker IO.
++                }
+                 Log.d("SHIZUKU_DEBUG", "depois de executar: $command") // CORRIGIDO BUG1: log obrigatório depois do comando.
+                 value // CORRIGIDO BUG1: entrega o resultado real.
+             } catch (error: Throwable) { // CORRIGIDO BUG1: não deixa exceção matar o painel.
+--- a/app/src/main/kotlin/painel/sensi/santos/ShellManager.kt
++++ b/app/src/main/kotlin/painel/sensi/santos/ShellManager.kt
+@@ -342,7 +342,9 @@
+     private fun execute(command: String): CommandResult {
+         Log.d(FLOW_TAG, "SHELL_COMMAND_START $command") // LOG ADICIONADO
+         Log.d("SHIZUKU_DEBUG", "antes de executar: $command") // CORRIGIDO BUG1: registra o início de cada comando remoto.
+-        if (!ShizukuBridge.hasPermission()) {
++        // CORRIGIDO ALONGAR TELA: revalidar binder e autorização antes de
++        // cada comando, inclusive settings/wm usados pelo fluxo de display.
++        if (!ShizukuBridge.isAvailable() || !ShizukuBridge.hasPermission()) {
+             val status = ShizukuBridge.status()
+             Log.e(TAG, "Comando não enviado: $status")
+             return CommandResult(false, status)

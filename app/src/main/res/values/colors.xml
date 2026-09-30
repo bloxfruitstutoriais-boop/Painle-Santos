@@ -1,0 +1,24 @@
+<resources>
+    <!-- CORRIGIDO: paleta neutra para eliminar o excesso de roxo. -->
+    <color name="ink">#080A0C</color>
+    <!-- CORRIGIDO: cards em grafite escuro. -->
+    <color name="surface">#181C1E</color>
+    <!-- CORRIGIDO: superfície alternativa neutra. -->
+    <color name="surface_alt">#22282A</color>
+    <!-- CORRIGIDO: cor principal restaurada para o roxo solicitado #6A1B9A. -->
+    <color name="purple">#6A1B9A</color>
+    <!-- CORRIGIDO: destaque roxo claro sem ciano. -->
+    <color name="purple_bright">#CE93D8</color>
+    <!-- CORRIGIDO: roxo escuro de apoio. -->
+    <color name="purple_dark">#4A126B</color>
+    <!-- CORRIGIDO: texto branco neutro. -->
+    <color name="white">#F4F8F7</color>
+    <!-- CORRIGIDO: texto secundário cinza. -->
+    <color name="muted">#A4AFAD</color>
+    <!-- CORRIGIDO: contorno neutro. -->
+    <color name="line">#465250</color>
+    <!-- CORRIGIDO: verde de sucesso compatível. -->
+    <color name="success">#68D3A9</color>
+    <!-- CORRIGIDO: aviso preservado sem roxo. -->
+    <color name="warning">#E7C979</color>
+</resources>

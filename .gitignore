@@ -1,0 +1,11 @@
+# CORRIGIDO: não versionar configuração local, artefatos ou credenciais de release.
+.gradle/
+local.properties
+build/
+app/build/
+keystore/
+*.jks
+*.keystore
+*.p12
+*.pem
+*.env

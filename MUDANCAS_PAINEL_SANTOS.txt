@@ -1,0 +1,35 @@
+PAINEL SANTOS — CORREÇÃO DA BOLHA FLUTUANTE
+Versão: 1.0.8 / versionCode 9
+
+PROBLEMA
+Nos sources `r14` e `final`, o `OverlayService` possuía uma `ImageView bubble` usando `R.drawable.floating_button`. Ela era a bola que fica na tela e abre o painel.
+
+O source `final-source-updated`/base usada na rodada anterior havia removido essa parte:
+- `buildPanel()` não criava mais a `bubble`;
+- `resizePanel()` mantinha sempre o painel completo;
+- o botão “−” chamava `hideForCapture()`, removendo a janela inteira.
+
+CORREÇÃO APLICADA
+- Restaurada a bolha original baseada em `res/drawable/floating_button.png`.
+- A imagem é exibida dentro de uma `ImageView` com recorte oval (`Outline.setOval` e `clipToOutline`), preservando o desenho circular da imagem.
+- Tamanho da bolha: 54dp, conforme os sources antigos.
+- Toque na bolha expande o painel.
+- Arrastar a bolha move o overlay e mantém sua posição dentro dos limites da tela.
+- O botão “−” agora recolhe o painel para a bolha; não remove o flutuante.
+- `resizePanel()` alterna corretamente entre o tamanho da bolha e o tamanho completo do painel.
+- `ACTION_OPEN`/`ACTION_SHOW` restauram a bolha visível.
+- Removido o AccessibilityService adicionado na tentativa anterior: ele não substitui a bola e não é necessário para o funcionamento normal do flutuante.
+- Nenhum botão novo foi criado.
+
+A bolha só pode aparecer se a permissão “Sobrepor a outros apps” estiver concedida ao PAINEL SANTOS. O painel começa pela bolha; toque na bolha para abrir o painel completo.
+
+ARQUIVOS ALTERADOS NESTA CORREÇÃO
+- app/src/main/java/painel/sensi/santos/OverlayService.java
+- app/src/main/AndroidManifest.xml (removido o serviço de acessibilidade da tentativa anterior)
+- app/src/main/res/values/strings.xml (removidas strings do serviço de acessibilidade)
+- app/build.gradle (assinatura debug compatível)
+- este relatório
+
+BUILD
+`./gradlew clean assembleDebug` deve terminar em `BUILD SUCCESSFUL`.
+Aparelho físico/ADB não estavam conectados nesta sessão; ainda é necessário confirmar visualmente no Galaxy A07.
