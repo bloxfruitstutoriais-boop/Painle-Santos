@@ -1480,6 +1480,8 @@ public class OverlayService extends Service {
         addToggle(list, "◆", "GPU Turbo", "Frequência máxima somente se o driver expuser o limite", "gpu_turbo");
         addToggle(list, "⇄", "Buffer TCP", "Otimiza tcp_rmem/tcp_wmem; valores originais são preservados", "network");
         section(list, "JOGO EM FOCO");
+        addGamePackageControl(list);
+        addCompilerControls(list);
         addToggle(list, "▶", "Game Mode oficial", "Usa cmd game mode performance somente quando o Android expõe suporte; restaura o modo anterior", "game_mode");
         addToggle(list, "◍", "Doze Blocker", "Whitelist temporária do pacote do jogo em foco", "doze_blocker");
         addToggle(list, "♨", "Thermal", "Não suportado: a proteção térmica nunca é desativada pelo painel", "thermal");
@@ -1494,7 +1496,6 @@ public class OverlayService extends Service {
         LinearLayout list = content();
         section(list, "CONFIGURAÇÕES");
         addNotice(list, "Shizuku", "Verificado antes de abrir o painel. Para trocar a autorização, feche a overlay e use o botão Abrir Painel na tela inicial.", Ui.MUTED);
-        addGamePackageControl(list);
         addAxManagerControls(list);
         addToggle(list, "⚡", "Ativar via Brevent",
                 "Instale Brevent → abra → ative via Wireless Debugging → volte e toque no switch. Sem API pública de shell externo, o painel usa WRITE_SECURE_SETTINGS permanente quando já concedido.",
@@ -1514,7 +1515,6 @@ public class OverlayService extends Service {
         deviceInfo = Ui.text(this, "Lendo informações do dispositivo…", 8, Ui.MUTED, false);
         deviceInfo.setLineSpacing(0, 1.05f);
         list.addView(deviceInfo, lp(-1, Ui.dp(this, 210)));
-        addNotice(list, "Renderer externo", "O Android não expõe API package-scoped confirmável para trocar o renderer de outro jogo; nenhuma escrita fictícia é feita.", Ui.MUTED);
         addNotice(list, "Aplicativo", "PAINEL SANTOS · painel.sensi.santos · 1.0.8 (9)", Ui.BRIGHT);
         addNotice(list, "Acesso", "Instagram: @davirosy2 · TikTok: @davirosy2", Ui.BRIGHT);
         scroll.addView(list);
@@ -1523,32 +1523,34 @@ public class OverlayService extends Service {
     }
 
     private void addAxManagerControls(LinearLayout list) {
-        section(list, "AXMANAGER · CONFIGURAÇÕES");
-        addNotice(list, "Status real do modo aplicado",
-                "Agressivo: sem governor/tweak inventado; Balanceado: sem API legítima exposta; Econômico/Seguro: preserva a proteção do Android. Nenhum modo é confirmado sem readback real.", Ui.MUTED);
-        axModeStatus = Ui.text(this,
-                "Modo aplicado: não confirmado · fonte=API pública Android",
-                9, Ui.BRIGHT, false);
-        axModeStatus.setLineSpacing(0, 1.05f);
-        list.addView(axModeStatus, lp(-1, Ui.dp(this, 34)));
-        addAction(list, "MODO AGRESSIVO", v -> applyAxMode("Agressivo"));
-        addAction(list, "MODO BALANCEADO", v -> applyAxMode("Balanceado"));
-        addAction(list, "MODO ECONÔMICO/SEGURO", v -> applyAxMode("Econômico/Seguro"));
-        addAction(list, "RESTAURAR MODO ANTERIOR", v -> restoreAxMode());
+        section(list, "AXMANAGER · PERFIS COMPATÍVEIS");
+        addNotice(list, "Perfis com confirmação",
+                "Agressivo usa CPU Performance; Balanceado usa Game Mode do Android; Seguro restaura os estados salvos. O resultado aparece no LOG.", Ui.MUTED);
+        axModeStatus = Ui.text(this, "Perfil aplicado: nenhum", 9, Ui.BRIGHT, false);
+        list.addView(axModeStatus, lp(-1, Ui.dp(this, 30)));
+        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);
+        String[] labels = {"AGRESSIVO", "BALANCEADO", "SEGURO"};
+        String[] modes = {"Agressivo", "Balanceado", "Econômico/Seguro"};
+        for (int i = 0; i < labels.length; i++) {
+            final String mode = modes[i];
+            TextView action = Ui.text(this, labels[i], 9, accentForeground(panelAccentColor), true);
+            action.setGravity(Gravity.CENTER); action.setTag("accent_button"); action.setBackground(Ui.rounded(panelAccentColor, 8, this));
+            action.setOnClickListener(v -> applyAxMode(mode));
+            LinearLayout.LayoutParams q = lp(0, Ui.dp(this, 42), 1); q.rightMargin = Ui.dp(this, 4);
+            row.addView(action, q);
+        }
+        list.addView(row, lp(-1, Ui.dp(this, 42)));
     }
 
     private void applyAxMode(String mode) {
         if (destroyed) return;
-        String detail = "AXManager " + mode + " não aplicado: não suportado pelo Android; nenhuma API legítima de modo exposta";
-        if (axModeStatus != null) axModeStatus.setText("Modo aplicado: não confirmado · " + detail);
-        postMessage(false, detail);
-    }
-
-    private void restoreAxMode() {
-        if (destroyed) return;
-        String detail = "Modo anterior AXManager não restaurado: não suportado pelo Android; nenhum snapshot/escrita foi executado";
-        if (axModeStatus != null) axModeStatus.setText("Modo aplicado: não confirmado · " + detail);
-        postMessage(false, detail);
+        if ("Agressivo".equals(mode)) {
+            ShellManager.setCpuGovernor(this, true, (ok, msg) -> { if (!destroyed) { if (axModeStatus != null) axModeStatus.setText("Perfil aplicado: Agressivo · " + msg); postMessage(ok, msg); } });
+        } else if ("Balanceado".equals(mode)) {
+            ShellManager.setGameMode(this, true, (ok, msg) -> { if (!destroyed) { if (axModeStatus != null) axModeStatus.setText("Perfil aplicado: Balanceado · " + msg); postMessage(ok, msg); } });
+        } else {
+            ShellManager.setCpuGovernor(this, false, (ok, msg) -> { if (!destroyed) { if (axModeStatus != null) axModeStatus.setText("Perfil aplicado: Seguro · " + msg); postMessage(ok, "Perfil Seguro: " + msg); } });
+        }
     }
 
     private void addColorPicker(LinearLayout list) {
@@ -2281,6 +2283,36 @@ public class OverlayService extends Service {
             }
         });
         list.addView(gamePackageInput, lp(-1, Ui.dp(this, 42)));
+    }
+
+    private void addCompilerControls(LinearLayout list) {
+        addNotice(list, "Compiler do jogo",
+                "Aplica o compilador oficial do Android ao package informado. Speed Profile pode exigir que o jogo já tenha perfil de execução.", Ui.MUTED);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        TextView speed = Ui.text(this, "SPEED", 10, accentForeground(panelAccentColor), true);
+        speed.setGravity(Gravity.CENTER); speed.setTag("accent_button"); speed.setBackground(Ui.rounded(panelAccentColor, 8, this));
+        TextView profile = Ui.text(this, "SPEED PROFILE", 10, accentForeground(panelAccentColor), true);
+        profile.setGravity(Gravity.CENTER); profile.setTag("accent_button"); profile.setBackground(Ui.rounded(panelAccentColor, 8, this));
+        speed.setOnClickListener(v -> runCompiler("speed"));
+        profile.setOnClickListener(v -> runCompiler("speed-profile"));
+        row.addView(speed, lp(0, Ui.dp(this, 42), 1));
+        row.addView(profile, lp(0, Ui.dp(this, 42), 1));
+        list.addView(row, lp(-1, Ui.dp(this, 42)));
+    }
+
+    private void runCompiler(String mode) {
+        String pkg = selectedGamePackage();
+        if (pkg.isEmpty()) {
+            postMessage(false, "Informe e salve o package do jogo antes de usar o Compiler");
+            return;
+        }
+        if (!beginRemoteOperation("compiler_" + mode)) return;
+        ShellManager.compilePackage(pkg, mode, (ok, msg) -> {
+            if (destroyed) return;
+            finishRemoteOperation("compiler_" + mode);
+            postMessage(ok, msg);
+        });
     }
 
     private boolean isExternalPackage(String value) {

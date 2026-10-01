@@ -128,6 +128,24 @@ object ShellManager {
     }
 
     @JvmStatic
+    fun compilePackage(packageName: String, mode: String, callback: Callback) {
+        async(callback) {
+            val safePackage = packageName.trim()
+            val safeMode = mode.trim()
+            if (!validPackage(safePackage) || safeMode !in setOf("speed", "speed-profile")) {
+                return@async Operation(false, "Compiler: package ou modo inválido")
+            }
+            val installed = execute("pm path $safePackage")
+            if (!installed.ok || !installed.stdout.contains("package:")) {
+                return@async failure("Compiler: package não instalado", installed)
+            }
+            val result = execute("cmd package compile -m $safeMode -f $safePackage")
+            if (result.ok) Operation(true, "Compiler $safeMode aplicado e confirmado pelo comando do Android · exit=${result.exitCode}")
+            else failure("Compiler $safeMode recusado pelo Android", result)
+        }
+    }
+
+    @JvmStatic
     fun setCpuGovernor(context: Context, enabled: Boolean, callback: Callback) {
         async(callback) { setCpuGovernorNow(context, enabled) }
     }

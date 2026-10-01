@@ -15,6 +15,7 @@ import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -92,18 +93,52 @@ public class ResolutionSetupActivity extends Activity {
         shizukuStatus = text("Shizuku: aguardando verificação", 11, Ui.MUTED, false);
         body.addView(shizukuStatus, height(38));
 
-        body.addView(text("RESOLUÇÃO / DPI", 11, Ui.BRIGHT, true), height(34));
-        addResolutionControls(body);
-        addAction(body, "Padrão / restaurar display", v -> applyPreset(DisplayManagerHelper.Preset.DEFAULT, 1f));
-        addAction(body, "Tela cheia (resolução nativa)", v -> applyPreset(DisplayManagerHelper.Preset.FULLSCREEN, 1f));
-        addAction(body, "Esticado 90%", v -> applyPreset(DisplayManagerHelper.Preset.STRETCHED, .90f));
-        addAction(body, "Esticado 80%", v -> applyPreset(DisplayManagerHelper.Preset.STRETCHED, .80f));
-
-        body.addView(text("PRESETS FLAGSHIP", 11, Ui.BRIGHT, true), height(34));
-        addFlagshipActions(body);
         status = text("Nenhuma alteração aplicada nesta sessão.", 12, Ui.MUTED, false);
-        body.addView(status, height(58));
-        body.addView(text("O Shizuku é verificado no botão Abrir Painel. As funções de resolução continuam nesta tela e não aparecem dentro da overlay.", 12, Ui.MUTED, false), height(58));
+
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        tabs.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 8));
+        FrameLayout pages = new FrameLayout(this);
+        LinearLayout home = new LinearLayout(this); home.setOrientation(LinearLayout.VERTICAL);
+        home.addView(text("PAINEL SANTOS", 12, Ui.BRIGHT, true), height(28));
+        home.addView(text("A key libera o app. Use ABRIR PAINEL para verificar o Shizuku e ativar a bolha flutuante.", 15, Ui.MUTED, false), height(92));
+        home.addView(text("As alterações de display ficam isoladas na aba Resolução para evitar travamentos e deixar a tela inicial limpa.", 13, Ui.MUTED, false), height(70));
+        LinearLayout resolution = new LinearLayout(this); resolution.setOrientation(LinearLayout.VERTICAL);
+        resolution.addView(text("RESOLUÇÃO / DPI", 11, Ui.BRIGHT, true), height(34));
+        addResolutionControls(resolution);
+        addAction(resolution, "Padrão / restaurar display", v -> applyPreset(DisplayManagerHelper.Preset.DEFAULT, 1f));
+        addAction(resolution, "Tela cheia (resolução nativa)", v -> applyPreset(DisplayManagerHelper.Preset.FULLSCREEN, 1f));
+        addAction(resolution, "Esticado 90%", v -> applyPreset(DisplayManagerHelper.Preset.STRETCHED, .90f));
+        addAction(resolution, "Esticado 80%", v -> applyPreset(DisplayManagerHelper.Preset.STRETCHED, .80f));
+        resolution.addView(text("PRESETS FLAGSHIP", 11, Ui.BRIGHT, true), height(34));
+        addFlagshipActions(resolution);
+        resolution.addView(status, height(70));
+        LinearLayout compatibility = new LinearLayout(this); compatibility.setOrientation(LinearLayout.VERTICAL);
+        compatibility.addView(text("COMPATIBILIDADE", 11, Ui.BRIGHT, true), height(34));
+        compatibility.addView(text("Refresh rate e renderer são exibidos conforme as APIs reais do aparelho. 60/90/120/144 Hz ficam selecionáveis somente quando o DisplayManager confirmar o modo.", 14, Ui.MUTED, false), height(108));
+        addAction(compatibility, "LER MODOS DE REFRESH DO APARELHO", v -> readDisplayInfo());
+        compatibility.addView(text("Renderer externo de outro jogo não possui API pública package-scoped confirmável no Android; por isso não há botão que finja aplicar uma troca global.", 13, Ui.MUTED, false), height(100));
+        pages.addView(home, new FrameLayout.LayoutParams(-1, -1));
+        pages.addView(resolution, new FrameLayout.LayoutParams(-1, -1));
+        pages.addView(compatibility, new FrameLayout.LayoutParams(-1, -1));
+        pages.getChildAt(1).setVisibility(View.GONE); pages.getChildAt(2).setVisibility(View.GONE);
+        String[] tabNames = {"INÍCIO", "RESOLUÇÃO", "COMPAT."};
+        for (int i = 0; i < tabNames.length; i++) {
+            final int index = i;
+            TextView tab = Ui.text(this, tabNames[i], 10, i == 0 ? Ui.WHITE : Ui.MUTED, true);
+            tab.setGravity(Gravity.CENTER); tab.setBackground(Ui.rounded(i == 0 ? Ui.PURPLE : Ui.SURFACE, 10, this));
+            tab.setOnClickListener(v -> {
+                for (int j = 0; j < pages.getChildCount(); j++) pages.getChildAt(j).setVisibility(j == index ? View.VISIBLE : View.GONE);
+                for (int j = 0; j < tabs.getChildCount(); j++) {
+                    TextView t = (TextView) tabs.getChildAt(j); t.setTextColor(j == index ? Ui.WHITE : Ui.MUTED); t.setBackground(Ui.rounded(j == index ? Ui.PURPLE : Ui.SURFACE, 10, this));
+                }
+            });
+            LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, Ui.dp(this, 38), 1); tp.rightMargin = Ui.dp(this, 5);
+            tabs.addView(tab, tp);
+        }
+        body.addView(tabs, height(48));
+        body.addView(pages, new LinearLayout.LayoutParams(-1, 0, 1));
+        body.addView(text("O botão Abrir Painel verifica o Shizuku somente quando tocado; nenhuma ponte é sondada dentro do painel flutuante.", 12, Ui.MUTED, false), height(54));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -156,7 +191,7 @@ public class ResolutionSetupActivity extends Activity {
                 if (w < 320 || h < 320) throw new NumberFormatException();
                 applyCustomWithDensity(w, h, Math.max(0, d));
             } catch (NumberFormatException error) {
-                status.setText("Informe Width, Height e DPI válidos");
+                status.setText("Informe Width e Height positivos; DPI 0 = automático pelo aparelho");
             }
         });
         addAction(body, "SALVAR PRESET STRETCH RESOLUTION (ORIGINAL)", v -> {
