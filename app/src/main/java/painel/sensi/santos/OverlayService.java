@@ -1493,7 +1493,7 @@ public class OverlayService extends Service {
         ScrollView scroll = page();
         LinearLayout list = content();
         section(list, "CONFIGURAÇÕES");
-        addShizukuCard(list);
+        addNotice(list, "Shizuku", "Verificado antes de abrir o painel. Para trocar a autorização, feche a overlay e use o botão Abrir Painel na tela inicial.", Ui.MUTED);
         addGamePackageControl(list);
         addAxManagerControls(list);
         addToggle(list, "⚡", "Ativar via Brevent",
@@ -3101,7 +3101,7 @@ public class OverlayService extends Service {
                 : "WRITE_SECURE_SETTINGS: pendente · ADB: pm grant painel.sensi.santos android.permission.WRITE_SECURE_SETTINGS";
         return "Sobreposição: " + overlay + " · notificações: " + notification
                 + " · WRITE_SETTINGS: " + writeSettings + "\n" + secure
-                + "\nShizuku: toque em AUTORIZAR · Brevent: toque no switch";
+                + "\nA autorização do painel é checada antes da abertura";
     }
 
     private void refreshDeviceInfo() {

@@ -28,6 +28,8 @@ public class ResolutionSetupActivity extends Activity {
     private static final int REQ_NOTIFICATIONS = 7401;
     private SharedPreferences prefs;
     private TextView status;
+    private TextView shizukuStatus;
+    private android.widget.Switch openPanelSwitch;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -61,10 +63,34 @@ public class ResolutionSetupActivity extends Activity {
         body.addView(text("Escolha a resolução antes de abrir o painel", 27, Ui.WHITE, true), height(76));
         body.addView(text("Esta etapa fica separada da bolha flutuante para reduzir travamentos. A primeira opção é abrir o painel; as demais controlam apenas o display.", 15, Ui.MUTED, false), height(82));
 
-        TextView open = Ui.button(this, "ABRIR PAINEL   ▣");
-        open.setOnClickListener(v -> openPanel());
-        body.addView(open, height(58));
-        Ui.animatePress(open);
+        LinearLayout launchCard = new LinearLayout(this);
+        launchCard.setGravity(Gravity.CENTER_VERTICAL);
+        launchCard.setPadding(Ui.dp(this, 18), Ui.dp(this, 8), Ui.dp(this, 10), Ui.dp(this, 8));
+        launchCard.setBackground(Ui.outline(0xFF241039, 0xFF9B4EE2, 18, this));
+        LinearLayout launchCopy = new LinearLayout(this);
+        launchCopy.setOrientation(LinearLayout.VERTICAL);
+        TextView launchTitle = text("ABRIR PAINEL", 17, Ui.WHITE, true);
+        TextView launchHint = text("Verificar Shizuku e ativar overlay", 10, Ui.MUTED, false);
+        launchCopy.addView(launchTitle, height(25));
+        launchCopy.addView(launchHint, height(20));
+        launchCard.addView(launchCopy, new LinearLayout.LayoutParams(0, Ui.dp(this, 49), 1));
+        openPanelSwitch = new android.widget.Switch(this);
+        openPanelSwitch.setButtonTintList(android.content.res.ColorStateList.valueOf(Ui.BRIGHT));
+        openPanelSwitch.setTrackTintList(new android.content.res.ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{0xFF9B4EE2, 0xFF51465A}));
+        openPanelSwitch.setThumbTintList(new android.content.res.ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{0xFFFFFFFF, 0xFFBEB2C5}));
+        openPanelSwitch.setContentDescription("Abrir painel e verificar Shizuku");
+        launchCard.addView(openPanelSwitch, new LinearLayout.LayoutParams(Ui.dp(this, 64), Ui.dp(this, 52)));
+        View.OnClickListener launch = v -> openPanel();
+        launchCard.setOnClickListener(launch);
+        openPanelSwitch.setOnClickListener(launch);
+        body.addView(launchCard, height(70));
+        Ui.animatePress(launchCard);
+        shizukuStatus = text("Shizuku: aguardando verificação", 11, Ui.MUTED, false);
+        body.addView(shizukuStatus, height(38));
 
         body.addView(text("RESOLUÇÃO / DPI", 11, Ui.BRIGHT, true), height(34));
         addResolutionControls(body);
@@ -77,7 +103,7 @@ public class ResolutionSetupActivity extends Activity {
         addFlagshipActions(body);
         status = text("Nenhuma alteração aplicada nesta sessão.", 12, Ui.MUTED, false);
         body.addView(status, height(58));
-        body.addView(text("A aplicação exige Shizuku ou WRITE_SECURE_SETTINGS. Se preferir, abra o painel e configure depois nesta tela.", 12, Ui.MUTED, false), height(58));
+        body.addView(text("O Shizuku é verificado no botão Abrir Painel. As funções de resolução continuam nesta tela e não aparecem dentro da overlay.", 12, Ui.MUTED, false), height(58));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -212,6 +238,30 @@ public class ResolutionSetupActivity extends Activity {
     }
 
     private void openPanel() {
+        if (openPanelSwitch != null) {
+            openPanelSwitch.setEnabled(false);
+            openPanelSwitch.setChecked(false);
+        }
+        if (shizukuStatus != null) shizukuStatus.setText("Shizuku: verificando…");
+        ShizukuBridge.refreshStatusAsync(this, (available, permission, current) -> {
+            if (available && permission) {
+                if (shizukuStatus != null) shizukuStatus.setText("Shizuku: autorizado · abrindo painel");
+                if (openPanelSwitch != null) openPanelSwitch.setChecked(true);
+                startPanelAfterShizuku();
+            } else if (available) {
+                if (shizukuStatus != null) shizukuStatus.setText("Shizuku: autorize o app e toque novamente");
+                ShizukuBridge.requestPermission();
+                Toast.makeText(this, "Autorize o PAINEL SANTOS no Shizuku e toque novamente.", Toast.LENGTH_LONG).show();
+                if (openPanelSwitch != null) openPanelSwitch.setEnabled(true);
+            } else {
+                if (shizukuStatus != null) shizukuStatus.setText("Shizuku: não iniciado · abra o Shizuku");
+                Toast.makeText(this, "Abra o Shizuku, inicie o serviço e toque em Abrir Painel.", Toast.LENGTH_LONG).show();
+                if (openPanelSwitch != null) openPanelSwitch.setEnabled(true);
+            }
+        });
+    }
+
+    private void startPanelAfterShizuku() {
         if (!Settings.canDrawOverlays(this)) {
             new android.app.AlertDialog.Builder(this)
                     .setTitle("Permissão do painel")

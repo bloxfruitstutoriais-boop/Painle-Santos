@@ -16,14 +16,14 @@ import android.graphics.drawable.GradientDrawable;
 import android.widget.FrameLayout;
 
 final class Ui {
-    static final int INK = Color.rgb(8, 10, 12);
-    static final int SURFACE = Color.rgb(24, 28, 30);
-    static final int SURFACE_ALT = Color.rgb(34, 40, 42);
-    static final int PURPLE = Color.rgb(106, 27, 154);
-    static final int BRIGHT = Color.rgb(206, 147, 216);
-    static final int WHITE = Color.rgb(244, 248, 247);
-    static final int MUTED = Color.rgb(164, 175, 173);
-    static final int SUCCESS = Color.rgb(104, 211, 169);
+    static final int INK = Color.rgb(8, 4, 15);
+    static final int SURFACE = Color.rgb(25, 13, 42);
+    static final int SURFACE_ALT = Color.rgb(43, 38, 48);
+    static final int PURPLE = Color.rgb(155, 78, 226);
+    static final int BRIGHT = Color.rgb(201, 139, 255);
+    static final int WHITE = Color.rgb(255, 250, 255);
+    static final int MUTED = Color.rgb(224, 207, 238);
+    static final int SUCCESS = Color.rgb(121, 244, 187);
 
     private Ui() {}
     static int dp(Context c, int v) { return Math.round(v * c.getResources().getDisplayMetrics().density); }
@@ -41,8 +41,12 @@ final class Ui {
     }
     static TextView button(Context c, String value) {
         TextView t = text(c, value, 16, INK, true); t.setGravity(android.view.Gravity.CENTER);
-        t.setBackground(rounded(BRIGHT, 28, c)); t.setPadding(dp(c, 18), 0, dp(c, 18), 0); t.setClickable(true);
-        t.setFocusable(true); return t;
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFFC98BFF, 0xFF8F42C9});
+        bg.setCornerRadius(dp(c, 18)); bg.setStroke(dp(c, 1), 0xFFE5C8FF);
+        t.setBackground(bg); t.setElevation(dp(c, 5));
+        t.setPadding(dp(c, 18), 0, dp(c, 18), 0); t.setClickable(true); t.setFocusable(true);
+        return t;
     }
     static void addBackdrop(Context c, FrameLayout root) {
         ImageView image = new ImageView(c); image.setImageResource(R.drawable.wallpaper);
