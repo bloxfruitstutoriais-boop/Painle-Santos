@@ -22,12 +22,9 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages
+      - name: Accept Android SDK licenses and install packages
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Make Gradle executable
