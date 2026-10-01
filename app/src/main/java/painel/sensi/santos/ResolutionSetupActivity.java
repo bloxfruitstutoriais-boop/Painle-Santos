@@ -132,9 +132,9 @@ public class ResolutionSetupActivity extends Activity {
         });
         addAction(services, "ABRIR BREVENT", v -> {
             try {
-                Intent launch = getPackageManager().getLaunchIntentForPackage("me.piebridge.brevent");
-                if (launch == null) serviceStatus.setText("Brevent: não instalado");
-                else { launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(launch); serviceStatus.setText("Brevent: aberto · conclua a ativação nele"); }
+                Intent breventLaunch = getPackageManager().getLaunchIntentForPackage("me.piebridge.brevent");
+                if (breventLaunch == null) serviceStatus.setText("Brevent: não instalado");
+                else { breventLaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(breventLaunch); serviceStatus.setText("Brevent: aberto · conclua a ativação nele"); }
             } catch (Throwable error) { serviceStatus.setText("Brevent: não foi possível abrir"); }
         });
         services.addView(text("RENDERER DO JOGO", 11, Ui.BRIGHT, true), height(34));
