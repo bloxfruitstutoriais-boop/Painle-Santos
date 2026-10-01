@@ -803,7 +803,6 @@ public class OverlayService extends Service {
         refreshStatus.setPadding(Ui.dp(this, 3), Ui.dp(this, 3), Ui.dp(this, 3), Ui.dp(this, 3));
         list.addView(refreshStatus, lp(-1, Ui.dp(this, 30)));
         addRefreshButtons(list);
-        addRendererControls(list);
         scroll.addView(list);
         updateRefreshStatus();
         return scroll;
@@ -1497,12 +1496,6 @@ public class OverlayService extends Service {
         section(list, "CONFIGURAÇÕES");
         addNotice(list, "Shizuku", "Verificado antes de abrir o painel. Para trocar a autorização, feche a overlay e use o botão Abrir Painel na tela inicial.", Ui.MUTED);
         addAxManagerControls(list);
-        addToggle(list, "⚡", "Ativar via Brevent",
-                "Instale Brevent → abra → ative via Wireless Debugging → volte e toque no switch. Sem API pública de shell externo, o painel usa WRITE_SECURE_SETTINGS permanente quando já concedido.",
-                "brevent");
-        addNotice(list, "Caminhos de concessão",
-                "Shizuku: Autorizar/Testar ponte · Brevent: abrir somente se instalado · ADB: pm grant painel.sensi.santos android.permission.WRITE_SECURE_SETTINGS",
-                Ui.MUTED);
         addToggle(list, "◌", "Ocultar na transmissão",
                 "Tira o painel da tela durante a transmissão; o jogo continua visível e a captura não é bloqueada.",
                 "hide_for_capture");
@@ -2676,7 +2669,6 @@ public class OverlayService extends Service {
         }
         if (selectedPage == 1) {
             refreshDisplayModes();
-            refreshRendererInfo();
         }
         if (selectedPage == 4) refreshDeviceInfo();
     }

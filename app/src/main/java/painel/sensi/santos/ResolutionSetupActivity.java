@@ -115,14 +115,44 @@ public class ResolutionSetupActivity extends Activity {
         resolution.addView(status, height(70));
         LinearLayout compatibility = new LinearLayout(this); compatibility.setOrientation(LinearLayout.VERTICAL);
         compatibility.addView(text("COMPATIBILIDADE", 11, Ui.BRIGHT, true), height(34));
-        compatibility.addView(text("Refresh rate e renderer são exibidos conforme as APIs reais do aparelho. 60/90/120/144 Hz ficam selecionáveis somente quando o DisplayManager confirmar o modo.", 14, Ui.MUTED, false), height(108));
+        compatibility.addView(text("Refresh rate é exibido conforme as APIs reais do aparelho. 60/90/120/144 Hz ficam selecionáveis somente quando o DisplayManager confirmar o modo.", 14, Ui.MUTED, false), height(108));
         addAction(compatibility, "LER MODOS DE REFRESH DO APARELHO", v -> readDisplayInfo());
-        compatibility.addView(text("Renderer externo de outro jogo não possui API pública package-scoped confirmável no Android; por isso não há botão que finja aplicar uma troca global.", 13, Ui.MUTED, false), height(100));
+
+        LinearLayout services = new LinearLayout(this); services.setOrientation(LinearLayout.VERTICAL);
+        services.addView(text("SERVIÇOS E RENDERER", 11, Ui.BRIGHT, true), height(34));
+        TextView serviceStatus = text("Shizuku: aguardando · Brevent: não verificado", 12, Ui.MUTED, false);
+        services.addView(serviceStatus, height(42));
+        addAction(services, "VERIFICAR / AUTORIZAR SHIZUKU", v -> {
+            serviceStatus.setText("Shizuku: verificando…");
+            ShizukuBridge.refreshStatusAsync(this, (available, permission, current) -> {
+                if (available && permission) serviceStatus.setText("Shizuku: autorizado");
+                else if (available) { serviceStatus.setText("Shizuku: autorização pendente"); ShizukuBridge.requestPermission(); }
+                else serviceStatus.setText("Shizuku: serviço não iniciado");
+            });
+        });
+        addAction(services, "ABRIR BREVENT", v -> {
+            try {
+                Intent launch = getPackageManager().getLaunchIntentForPackage("me.piebridge.brevent");
+                if (launch == null) serviceStatus.setText("Brevent: não instalado");
+                else { launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(launch); serviceStatus.setText("Brevent: aberto · conclua a ativação nele"); }
+            } catch (Throwable error) { serviceStatus.setText("Brevent: não foi possível abrir"); }
+        });
+        services.addView(text("RENDERER DO JOGO", 11, Ui.BRIGHT, true), height(34));
+        services.addView(text("As opções ficam no app, mas a troca de renderer de outro jogo só será aplicada quando o Android/ROM expuser uma API confirmável. Não será feita escrita global fictícia que possa travar o aparelho.", 12, Ui.MUTED, false), height(95));
+        LinearLayout rendererRow = new LinearLayout(this); rendererRow.setOrientation(LinearLayout.HORIZONTAL);
+        for (String renderer : new String[]{"AUTOMÁTICO", "OPENGL", "VULKAN"}) {
+            TextView option = Ui.text(this, renderer, 9, Ui.MUTED, true); option.setGravity(Gravity.CENTER); option.setBackground(Ui.outline(Ui.SURFACE, Ui.PURPLE, 8, this));
+            option.setOnClickListener(v -> serviceStatus.setText("Renderer " + renderer + ": API externa não confirmada neste aparelho"));
+            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0, Ui.dp(this, 42), 1); rp.rightMargin = Ui.dp(this, 5); rendererRow.addView(option, rp);
+        }
+        services.addView(rendererRow, height(42));
+        services.addView(text("O renderer continua fora do painel flutuante; aqui ele pode ser consultado sem misturar as funções de desempenho.", 11, Ui.MUTED, false), height(48));
         pages.addView(home, new FrameLayout.LayoutParams(-1, -1));
         pages.addView(resolution, new FrameLayout.LayoutParams(-1, -1));
         pages.addView(compatibility, new FrameLayout.LayoutParams(-1, -1));
-        pages.getChildAt(1).setVisibility(View.GONE); pages.getChildAt(2).setVisibility(View.GONE);
-        String[] tabNames = {"INÍCIO", "RESOLUÇÃO", "COMPAT."};
+        pages.addView(services, new FrameLayout.LayoutParams(-1, -1));
+        pages.getChildAt(1).setVisibility(View.GONE); pages.getChildAt(2).setVisibility(View.GONE); pages.getChildAt(3).setVisibility(View.GONE);
+        String[] tabNames = {"INÍCIO", "RESOLUÇÃO", "COMPAT.", "SERVIÇOS"};
         for (int i = 0; i < tabNames.length; i++) {
             final int index = i;
             TextView tab = Ui.text(this, tabNames[i], 10, i == 0 ? Ui.WHITE : Ui.MUTED, true);
