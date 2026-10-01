@@ -384,9 +384,9 @@ object ShellManager {
     }
 
     /**
-     * Restaura todos os ajustes remotos em uma única fila e só responde depois
-     * de cada releitura/rollback individual. O Thermal não entra na sequência:
-     * proteção térmica jamais é desativada ou alterada.
+     * Restaura os tweaks remotos em uma única fila. Resolução/densidade e
+     * escalas de animação ficam deliberadamente fora desta rotina: são estado
+     * do display/usuário e não devem ser alterados pelo botão de reset.
      */
     @JvmStatic
     fun restoreAllTweaks(context: Context, callback: Callback) {
@@ -394,14 +394,12 @@ object ShellManager {
     }
 
     /**
-     * Limpa os ajustes globais solicitados pelo usuário em ordem determinística.
-     * O reboot permanece deliberadamente como o último comando da fila.
+     * Volta os ajustes de sistema controlados pelo painel aos defaults seguros.
+     * Não escreve window_animation_scale, transition_animation_scale ou
+     * animator_duration_scale e não executa wm size/wm density.
      */
     private fun restoreAllTweaksNow(context: Context): Operation {
         val commands = listOf(
-            "settings put global window_animation_scale 1.0",
-            "settings put global transition_animation_scale 1.0",
-            "settings put global animator_duration_scale 1.0",
             "settings put system pointer_speed 0",
             "settings put system show_touches 0",
             "settings put system pointer_location 0",
@@ -419,13 +417,8 @@ object ShellManager {
             "settings put global always_finish_activities 0",
             "settings put global debug_view_attributes 0",
             "settings put global show_processes 0",
-            "settings delete global peak_refresh_rate",
-            "settings delete global min_refresh_rate",
-            "settings delete global user_refresh_rate",
-            "settings delete system peak_refresh_rate",
-            "settings delete system min_refresh_rate",
-            "settings delete system user_refresh_rate",
-            "settings delete global debug.hwui.renderer",
+            // Display state is intentionally preserved: no refresh/display
+            // reset is performed by this action.
             "settings delete global force_gpu_rendering",
             "settings delete global disable_window_blurs",
             "settings delete global debug_app",
@@ -440,8 +433,7 @@ object ShellManager {
             "settings delete global device_idle_constants",
             "settings delete global forced_app_standby_apps",
             "cmd appops reset --all",
-            "cmd package reset-preferred-activities",
-            "reboot"
+            "cmd package reset-preferred-activities"
         )
         val details = ArrayList<String>()
         var allOk = true

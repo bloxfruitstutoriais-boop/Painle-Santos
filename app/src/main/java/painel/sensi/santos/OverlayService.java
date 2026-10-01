@@ -1466,7 +1466,7 @@ public class OverlayService extends Service {
         LinearLayout list = content();
         section(list, "OTIMIZAÇÃO");
         addToggle(list, "♨", "DESATIVAR TODOS OS TWEAKS",
-                "Desliga boosts e otimizações ativos e restaura os valores salvos; não reativa nada ao desligar.",
+                "Restaura tweaks do sistema ao padrão; preserva resolução/densidade e escalas de animação.",
                 "safe_mode");
         addToggle(list, "☷", "Sistema responsivo", "Escalas de animação reversíveis, somente por ação explícita", "system");
         addSlider(list, "Escalas de animação", "animation_scale", 0, 200, 100,
@@ -3242,75 +3242,69 @@ public class OverlayService extends Service {
         }
         final String savedKey = prefs.getString("key", "");
         restorePointerSpeedLocal();
-        message(null, "Fila única de restauração iniciada; Thermal preservado…");
+        message(null, "Fila única de restauração iniciada; resolução e animações serão preservadas…");
         ShellManager.restoreAllTweaks(this, (shellOk, shellMsg) -> {
             if (destroyed) return;
-            postMessage(shellOk, "Fila Shizuku concluída:\n" + shellMsg);
-            // Só depois que a fila remota terminou, inicia o lock único do
-            // display. Nunca há size/density ou rollback concorrente.
-            DisplayManagerHelper.applyStretchPreset(this, DisplayManagerHelper.Preset.DEFAULT,
-                    1.00f, (displayOk, displayMsg) -> {
-                        if (destroyed) return;
-                        postMessage(displayOk, "Display: " + displayMsg);
-                        boolean captureOk = !hiddenForCapture || setCaptureProtection(false);
-                        if (captureOk) {
-                            hiddenForCapture = false;
-                            setFeatureState("hide_for_capture", false);
-                        }
-                        boolean allOk = shellOk && displayOk && captureOk;
-                        if (allOk) {
-                            boolean colorOk = restorePanelAccentColor();
-                            allOk = allOk && colorOk;
-                            SharedPreferences.Editor editor = prefs.edit();
-                            String[] controlled = {
-                                    "feature_touch", "feature_system", "feature_cpu_governor",
-                                    "feature_gpu_turbo", "feature_touch_driver", "feature_network",
-                                    "feature_game_mode", "feature_doze_blocker",
-                                    "feature_do_not_disturb", "feature_safe_mode",
-                                    "feature_hide_for_capture", "feature_cache", "feature_ram",
-                                    "feature_stretch", "feature_fullscreen_stretch",
-                                    "slider_long_press", "slider_animation_scale",
-                                    "slider_stretch_x", "slider_stretch_y",
-                                    "stretch_preset_x", "stretch_preset_y",
-                                    "applied_display_mode_id", "applied_display_rate",
-                                    "original_display_mode_id", "stretch_requested", "stretch_factor", "renderer_mode",
-                                    "original_panel_accent_color", "panel_accent_color"
-                            };
-                            for (String name : controlled) editor.remove(name);
-                            editor.putString("key", savedKey).apply();
-                            for (String keyName : toggleViews.keySet()) {
-                                if (!"thermal".equals(keyName)) setToggleChecked(keyName, false);
-                            }
-                            for (Map.Entry<String, SeekBar> entry : sliderViews.entrySet()) {
-                                if ("pointer_speed".equals(entry.getKey())) continue;
-                                Integer min = sliderMins.get(entry.getKey());
-                                Integer defaultValue = sliderDefaults.get(entry.getKey());
-                                if (min == null || defaultValue == null) continue;
-                                updatingControls = true;
-                                entry.getValue().setProgress(defaultValue - min);
-                                updatingControls = false;
-                                TextView value = sliderValues.get(entry.getKey());
-                                if (value != null) value.setText(formatSliderValue(entry.getKey(), defaultValue));
-                            }
-                            if (rendererSelector != null) rendererSelector.setSelection(0);
-                            restoreOriginalPanelDisplayMode();
-                            setFeatureState("safe_mode", protectionMode);
-                            setToggleChecked("safe_mode", protectionMode);
-                        } else {
-                            // Falha parcial nunca vira sucesso: conservar as
-                            // preferências/estados para nova tentativa e deixar
-                            // o estado real visível no LOG.
-                            setFeatureState("safe_mode", false);
-                            setToggleChecked("safe_mode", false);
-                        }
-                        pendingToggleOperations.remove("safe_mode");
-                        updateRefreshStatus();
-                        updateCapabilityStates();
-                        postMessage(allOk, allOk
-                                ? (protectionMode ? "Modo de proteção concluído após releitura completa"
-                                : "Restauração total concluída após releitura completa")
-                                : "Restauração parcial/recusada; estados reais foram mantidos para nova tentativa");
-                    });
+            postMessage(shellOk, "Tweaks do sistema:\n" + shellMsg);
+            // Importante: esta ação não chama wm size/wm density nem aplica o
+            // preset DEFAULT. Resolução, densidade, esticamento e animações
+            // permanecem exatamente como o usuário deixou.
+            boolean captureOk = !hiddenForCapture || setCaptureProtection(false);
+            if (captureOk) {
+                hiddenForCapture = false;
+                setFeatureState("hide_for_capture", false);
+            }
+            boolean allOk = shellOk && captureOk;
+            if (allOk) {
+                boolean colorOk = restorePanelAccentColor();
+                allOk = allOk && colorOk;
+                SharedPreferences.Editor editor = prefs.edit();
+                String[] controlled = {
+                        "feature_touch", "feature_system", "feature_cpu_governor",
+                        "feature_gpu_turbo", "feature_touch_driver", "feature_network",
+                        "feature_game_mode", "feature_doze_blocker",
+                        "feature_do_not_disturb", "feature_safe_mode",
+                        "feature_hide_for_capture", "feature_cache", "feature_ram",
+                        "slider_long_press", "renderer_mode",
+                        "original_panel_accent_color", "panel_accent_color"
+                };
+                for (String name : controlled) editor.remove(name);
+                editor.putString("key", savedKey).apply();
+                for (Map.Entry<String, Switch> entry : toggleViews.entrySet()) {
+                    String keyName = entry.getKey();
+                    // O reset de tweaks não desliga nem falsifica o estado do
+                    // display: os controles de esticamento continuam intactos.
+                    if (!"thermal".equals(keyName) && !"stretch".equals(keyName)
+                            && !"fullscreen_stretch".equals(keyName)) {
+                        setToggleChecked(keyName, false);
+                    }
+                }
+                for (Map.Entry<String, SeekBar> entry : sliderViews.entrySet()) {
+                    String keyName = entry.getKey();
+                    if ("pointer_speed".equals(keyName) || "animation_scale".equals(keyName)
+                            || "stretch_x".equals(keyName) || "stretch_y".equals(keyName)) continue;
+                    Integer min = sliderMins.get(keyName);
+                    Integer defaultValue = sliderDefaults.get(keyName);
+                    if (min == null || defaultValue == null) continue;
+                    updatingControls = true;
+                    entry.getValue().setProgress(defaultValue - min);
+                    updatingControls = false;
+                    TextView value = sliderValues.get(keyName);
+                    if (value != null) value.setText(formatSliderValue(keyName, defaultValue));
+                }
+                setFeatureState("safe_mode", protectionMode);
+                setToggleChecked("safe_mode", protectionMode);
+            } else {
+                setFeatureState("safe_mode", false);
+                setToggleChecked("safe_mode", false);
+            }
+            pendingToggleOperations.remove("safe_mode");
+            updateRefreshStatus();
+            updateCapabilityStates();
+            postMessage(allOk, allOk
+                    ? (protectionMode ? "Modo de proteção concluído; display e animações preservados"
+                    : "Tweaks restaurados ao padrão; resolução e escalas de animação preservadas")
+                    : "Restauração parcial/recusada; estados reais foram mantidos para nova tentativa");
         });
     }
 
