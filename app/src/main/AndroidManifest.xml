@@ -28,7 +28,7 @@
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"
-        android:label="PAINEL SANTOS"
+        android:label="Santos Team"
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
         <activity android:name=".ResolutionSetupActivity" android:screenOrientation="portrait" android:exported="false" />

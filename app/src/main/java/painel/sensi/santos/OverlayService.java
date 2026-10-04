@@ -464,7 +464,7 @@ public class OverlayService extends Service {
 
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel c = new NotificationChannel(CHANNEL, "PAINEL SANTOS",
+            NotificationChannel c = new NotificationChannel(CHANNEL, "Santos Team",
                     NotificationManager.IMPORTANCE_LOW);
             c.setDescription("Notificação do painel flutuante");
             ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(c);
@@ -476,7 +476,7 @@ public class OverlayService extends Service {
                 ? new Notification.Builder(this, CHANNEL)
                 : new Notification.Builder(this);
         builder.setSmallIcon(R.drawable.ic_stat_santos)
-                .setContentTitle("PAINEL SANTOS")
+                .setContentTitle("Santos Team")
                 .setContentText(hiddenForCapture
                         ? "Painel oculto durante transmissão · jogo continua visível"
                         : "Painel aberto")
@@ -712,7 +712,7 @@ public class OverlayService extends Service {
         bubble = new ImageView(this);
         bubble.setImageResource(R.drawable.floating_button);
         bubble.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        bubble.setContentDescription("Bolha flutuante PAINEL SANTOS");
+        bubble.setContentDescription("Bolha flutuante Santos Team");
         bubble.setPadding(0, 0, 0, 0);
         bubble.setBackground(Ui.rounded(0xFF0D1C2C, 99, this));
         bubble.setClipToOutline(true);
@@ -1508,7 +1508,7 @@ public class OverlayService extends Service {
         deviceInfo = Ui.text(this, "Lendo informações do dispositivo…", 8, Ui.MUTED, false);
         deviceInfo.setLineSpacing(0, 1.05f);
         list.addView(deviceInfo, lp(-1, Ui.dp(this, 210)));
-        addNotice(list, "Aplicativo", "PAINEL SANTOS · painel.sensi.santos · 1.0.8 (9)", Ui.BRIGHT);
+        addNotice(list, "Aplicativo", "Santos Team · painel.sensi.santos · 1.0.8 (9)", Ui.BRIGHT);
         addNotice(list, "Acesso", "Instagram: @davirosy2 · TikTok: @davirosy2", Ui.BRIGHT);
         scroll.addView(list);
         refreshDeviceInfo();
@@ -2136,7 +2136,7 @@ public class OverlayService extends Service {
             startActivity(intent);
         } catch (RuntimeException error) {
             Log.e(FLOW_TAG, "WRITE_SETTINGS_SETTINGS_OPEN_FAILED", error);
-            message(false, "Abra manualmente Acesso especial > Modificar configurações do sistema para o PAINEL SANTOS");
+            message(false, "Abra manualmente Acesso especial > Modificar configurações do sistema para o Santos Team");
         }
     }
 

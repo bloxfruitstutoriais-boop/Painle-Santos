@@ -18,12 +18,12 @@ import android.widget.FrameLayout;
 final class Ui {
     static final int INK = Color.rgb(8, 4, 15);
     static final int SURFACE = Color.rgb(25, 13, 42);
-    static final int SURFACE_ALT = Color.rgb(43, 38, 48);
-    static final int PURPLE = Color.rgb(155, 78, 226);
-    static final int BRIGHT = Color.rgb(201, 139, 255);
+    static final int SURFACE_ALT = Color.rgb(58, 25, 82);
+    static final int PURPLE = Color.rgb(151, 45, 242);
+    static final int BRIGHT = Color.rgb(232, 129, 255);
     static final int WHITE = Color.rgb(255, 250, 255);
-    static final int MUTED = Color.rgb(224, 207, 238);
-    static final int SUCCESS = Color.rgb(121, 244, 187);
+    static final int MUTED = Color.rgb(242, 222, 250);
+    static final int SUCCESS = Color.rgb(132, 255, 204);
 
     private Ui() {}
     static int dp(Context c, int v) { return Math.round(v * c.getResources().getDisplayMetrics().density); }

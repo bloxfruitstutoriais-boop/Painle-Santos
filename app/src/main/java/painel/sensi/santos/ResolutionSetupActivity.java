@@ -100,7 +100,7 @@ public class ResolutionSetupActivity extends Activity {
         tabs.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 8));
         FrameLayout pages = new FrameLayout(this);
         LinearLayout home = new LinearLayout(this); home.setOrientation(LinearLayout.VERTICAL);
-        home.addView(text("PAINEL SANTOS", 12, Ui.BRIGHT, true), height(28));
+        home.addView(text("Santos Team", 12, Ui.BRIGHT, true), height(28));
         home.addView(text("A key libera o app. Use ABRIR PAINEL para verificar o Shizuku e ativar a bolha flutuante.", 15, Ui.MUTED, false), height(92));
         home.addView(text("As alterações de display ficam isoladas na aba Resolução para evitar travamentos e deixar a tela inicial limpa.", 13, Ui.MUTED, false), height(70));
         LinearLayout resolution = new LinearLayout(this); resolution.setOrientation(LinearLayout.VERTICAL);
@@ -133,10 +133,15 @@ public class ResolutionSetupActivity extends Activity {
         addAction(services, "ABRIR BREVENT", v -> {
             try {
                 Intent breventLaunch = getPackageManager().getLaunchIntentForPackage("me.piebridge.brevent");
-                if (breventLaunch == null) serviceStatus.setText("Brevent: não instalado");
+                if (breventLaunch == null) serviceStatus.setText("Brevent: não instalado ou sem launcher");
                 else { breventLaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(breventLaunch); serviceStatus.setText("Brevent: aberto · conclua a ativação nele"); }
-            } catch (Throwable error) { serviceStatus.setText("Brevent: não foi possível abrir"); }
+            } catch (Throwable error) { serviceStatus.setText("Brevent: não foi possível abrir: " + error.getClass().getSimpleName()); }
         });
+        addAction(services, "ATIVAR MODO DESKTOP / DEX", v -> {
+            serviceStatus.setText("DeX: verificando Shizuku e capacidades…");
+            ShellManager.startDesktopMode(this, (ok, msg) -> runOnUiThread(() -> { serviceStatus.setText("DeX: " + msg); Toast.makeText(this, msg, Toast.LENGTH_LONG).show(); }));
+        });
+        addAction(services, "DESATIVAR MODO DESKTOP / DEX", v -> ShellManager.stopDesktopMode(this, (ok, msg) -> runOnUiThread(() -> { serviceStatus.setText("DeX: " + msg); Toast.makeText(this, msg, Toast.LENGTH_LONG).show(); })));
         services.addView(text("RENDERER DO JOGO", 11, Ui.BRIGHT, true), height(34));
         services.addView(text("As opções ficam no app, mas a troca de renderer de outro jogo só será aplicada quando o Android/ROM expuser uma API confirmável. Não será feita escrita global fictícia que possa travar o aparelho.", 12, Ui.MUTED, false), height(95));
         LinearLayout rendererRow = new LinearLayout(this); rendererRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -147,12 +152,48 @@ public class ResolutionSetupActivity extends Activity {
         }
         services.addView(rendererRow, height(42));
         services.addView(text("O renderer continua fora do painel flutuante; aqui ele pode ser consultado sem misturar as funções de desempenho.", 11, Ui.MUTED, false), height(48));
+        LinearLayout games = new LinearLayout(this); games.setOrientation(LinearLayout.VERTICAL);
+        games.addView(text("JOGOS / COMPILER", 11, Ui.BRIGHT, true), height(34));
+        games.addView(text("Selecione o package do jogo e aplique somente os perfis oficiais do Android. O resultado real aparece no status.", 13, Ui.MUTED, false), height(74));
+        EditText packageInput = new EditText(this);
+        packageInput.setSingleLine(true); packageInput.setHint("com.exemplo.jogo");
+        packageInput.setText(prefs.getString("selected_game_package", ""));
+        packageInput.setTextColor(Ui.WHITE); packageInput.setHintTextColor(Ui.MUTED); packageInput.setTextSize(14);
+        packageInput.setPadding(Ui.dp(this, 14), 0, Ui.dp(this, 14), 0);
+        packageInput.setBackground(Ui.outline(Ui.SURFACE, Ui.BRIGHT, 10, this));
+        games.addView(packageInput, height(52));
+        addAction(games, "SALVAR JOGO SELECIONADO", v -> {
+            String pkg = packageInput.getText().toString().trim();
+            if (!pkg.matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+")) { packageInput.setError("Package inválido"); return; }
+            prefs.edit().putString("selected_game_package", pkg).apply();
+            status.setText("Jogo salvo: " + pkg);
+        });
+        LinearLayout profileRow = new LinearLayout(this); profileRow.setOrientation(LinearLayout.HORIZONTAL);
+        for (String profile : new String[]{"SEGURO", "BALANCEADO", "AGRESSIVO"}) {
+            TextView option = Ui.text(this, profile, 10, Ui.WHITE, true); option.setGravity(Gravity.CENTER);
+            option.setBackground(Ui.outline(Ui.SURFACE, Ui.BRIGHT, 9, this));
+            option.setOnClickListener(v -> {
+                String pkg = packageInput.getText().toString().trim();
+                if (!pkg.matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+")) { packageInput.setError("Informe o package do jogo"); return; }
+                prefs.edit().putString("selected_game_package", pkg).apply();
+                String mode = profile.equals("AGRESSIVO") ? "speed" : "speed-profile";
+                status.setText("Aplicando perfil " + profile + "…");
+                ShellManager.compilePackage(pkg, mode, (ok, msg) -> runOnUiThread(() -> { status.setText(profile + ": " + msg); Toast.makeText(this, msg, Toast.LENGTH_SHORT).show(); }));
+            });
+            LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(0, Ui.dp(this, 48), 1); pp.rightMargin = Ui.dp(this, 5); profileRow.addView(option, pp);
+        }
+        games.addView(profileRow, height(48));
+        addAction(games, "COMPILAR SPEED", v -> compileGame(packageInput, "speed"));
+        addAction(games, "COMPILAR SPEED PROFILE", v -> compileGame(packageInput, "speed-profile"));
+        games.addView(text("Os perfis não alteram arquivos do jogo. O Android pode recusar o modo quando o package não estiver instalado ou quando o firmware não expuser o compilador.", 11, Ui.MUTED, false), height(60));
+
         pages.addView(home, new FrameLayout.LayoutParams(-1, -1));
+        pages.addView(games, new FrameLayout.LayoutParams(-1, -1));
         pages.addView(resolution, new FrameLayout.LayoutParams(-1, -1));
         pages.addView(compatibility, new FrameLayout.LayoutParams(-1, -1));
         pages.addView(services, new FrameLayout.LayoutParams(-1, -1));
-        pages.getChildAt(1).setVisibility(View.GONE); pages.getChildAt(2).setVisibility(View.GONE); pages.getChildAt(3).setVisibility(View.GONE);
-        String[] tabNames = {"INÍCIO", "RESOLUÇÃO", "COMPAT.", "SERVIÇOS"};
+        for (int hidden = 1; hidden < pages.getChildCount(); hidden++) pages.getChildAt(hidden).setVisibility(View.GONE);
+        String[] tabNames = {"INÍCIO", "JOGOS", "RESOLUÇÃO", "COMPAT.", "SERVIÇOS"};
         for (int i = 0; i < tabNames.length; i++) {
             final int index = i;
             TextView tab = Ui.text(this, tabNames[i], 10, i == 0 ? Ui.WHITE : Ui.MUTED, true);
@@ -281,6 +322,14 @@ public class ResolutionSetupActivity extends Activity {
         }
     }
 
+    private void compileGame(EditText input, String mode) {
+        String pkg = input.getText().toString().trim();
+        if (!pkg.matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+")) { input.setError("Informe um package válido"); return; }
+        prefs.edit().putString("selected_game_package", pkg).apply();
+        status.setText("Aplicando " + mode + "…");
+        ShellManager.compilePackage(pkg, mode, (ok, msg) -> runOnUiThread(() -> { status.setText(msg); Toast.makeText(this, msg, Toast.LENGTH_SHORT).show(); }));
+    }
+
     private void applyCustom(int width, int height) {
         applyCustomWithDensity(width, height, 0);
     }
@@ -316,7 +365,7 @@ public class ResolutionSetupActivity extends Activity {
             } else if (available) {
                 if (shizukuStatus != null) shizukuStatus.setText("Shizuku: autorize o app e toque novamente");
                 ShizukuBridge.requestPermission();
-                Toast.makeText(this, "Autorize o PAINEL SANTOS no Shizuku e toque novamente.", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Autorize o Santos Team no Shizuku e toque novamente.", Toast.LENGTH_LONG).show();
                 if (openPanelSwitch != null) openPanelSwitch.setEnabled(true);
             } else {
                 if (shizukuStatus != null) shizukuStatus.setText("Shizuku: não iniciado · abra o Shizuku");
@@ -330,7 +379,7 @@ public class ResolutionSetupActivity extends Activity {
         if (!Settings.canDrawOverlays(this)) {
             new android.app.AlertDialog.Builder(this)
                     .setTitle("Permissão do painel")
-                    .setMessage("Conceda a permissão para o PAINEL SANTOS aparecer sobre outros apps.")
+                    .setMessage("Conceda a permissão para o Santos Team aparecer sobre outros apps.")
                     .setPositiveButton("Conceder", (d, w) -> {
                         try { startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                                 Uri.parse("package:" + getPackageName()))); }

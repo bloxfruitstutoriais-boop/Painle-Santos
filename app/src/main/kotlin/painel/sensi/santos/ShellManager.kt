@@ -145,6 +145,58 @@ object ShellManager {
         }
     }
 
+    /**
+     * Tenta iniciar um ambiente desktop compatível usando somente comandos
+     * confirmáveis pelo Shizuku. Cada escrita é seguida de leitura; o app não
+     * informa sucesso quando o firmware rejeita o modo.
+     */
+    @JvmStatic
+    fun startDesktopMode(context: Context, callback: Callback) {
+        async(callback) {
+            val help = execute("cmd display help")
+            val settings = listOf(
+                "settings put global force_resizable_activities 1",
+                "settings put global enable_freeform_support 1",
+                "settings put global force_desktop_mode_on_external_displays 1"
+            )
+            val results = settings.map { execute(it) }
+            val wm = execute("wm set-display-windowing-mode -d 0 5")
+            val readback = execute("settings get global force_resizable_activities; settings get global enable_freeform_support; wm size; wm density")
+            val settingsOk = results.all { it.ok }
+            val desktopCommand = if (help.ok && help.output.contains("create-virtual-display")) {
+                execute("cmd display create-virtual-display SantosTeam-Dextop --width 1920 --height 1080 --density 240 --own-content-only")
+            } else null
+            val confirmed = settingsOk && (wm.ok || desktopCommand?.ok == true)
+                    && readback.ok
+            if (confirmed) {
+                Operation(true, "Modo desktop/DeX solicitado e confirmado pelo sistema. ${readback.stdout.trim()}")
+            } else {
+                val detail = listOf(
+                    "settings=${results.map { it.exitCode }}",
+                    "wm=${wm.exitCode}:${wm.stderr.ifBlank { wm.stdout }.trim()}",
+                    "virtual=${desktopCommand?.exitCode ?: -1}",
+                    "readback=${readback.stdout.trim()} ${readback.stderr.trim()}"
+                ).joinToString(" | ")
+                Operation(false, "Este firmware não confirmou o modo desktop/DeX; nenhuma ativação foi simulada. $detail")
+            }
+        }
+    }
+
+    @JvmStatic
+    fun stopDesktopMode(context: Context, callback: Callback) {
+        async(callback) {
+            val commands = listOf(
+                "settings delete global force_resizable_activities",
+                "settings delete global enable_freeform_support",
+                "settings delete global force_desktop_mode_on_external_displays",
+                "wm set-display-windowing-mode -d 0 1"
+            )
+            val results = commands.map { execute(it) }
+            if (results.all { it.ok }) Operation(true, "Modo desktop/DeX desativado e configurações temporárias removidas.")
+            else Operation(false, "O sistema recusou parte da restauração; verifique o log Shizuku: ${results.map { it.exitCode }}")
+        }
+    }
+
     @JvmStatic
     fun setCpuGovernor(context: Context, enabled: Boolean, callback: Callback) {
         async(callback) { setCpuGovernorNow(context, enabled) }
