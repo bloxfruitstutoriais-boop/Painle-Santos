@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Santos Team</string>
+    <string name="accessibility_service_description">Camada de interação do display virtual Santos Team</string>
 </resources>
