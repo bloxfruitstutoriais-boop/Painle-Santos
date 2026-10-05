@@ -146,56 +146,61 @@ object ShellManager {
     }
 
     /**
-     * Tenta iniciar um ambiente desktop compatível usando somente comandos
-     * confirmáveis pelo Shizuku. Cada escrita é seguida de leitura; o app não
-     * informa sucesso quando o firmware rejeita o modo.
+     * Cria uma sessão de display virtual no mesmo caminho usado por Dextop:
+     * overlay_display_devices + Shizuku. Em Samsung/One UI o próprio sistema
+     * decide se o display recebe a experiência DeX; não forçamos chaves globais
+     * genéricas nem declaramos sucesso sem confirmar o display criado.
      */
     @JvmStatic
     fun startDesktopMode(context: Context, callback: Callback) {
         async(callback) {
-            val help = execute("cmd display help")
-            val settings = listOf(
-                "settings put global force_resizable_activities 1",
-                "settings put global enable_freeform_support 1",
-                "settings put global force_desktop_mode_on_external_displays 1"
-            )
-            val results = settings.map { execute(it) }
-            val wm = execute("wm set-display-windowing-mode -d 0 5")
-            val readback = execute("settings get global force_resizable_activities; settings get global enable_freeform_support; wm size; wm density")
-            val settingsOk = results.all { it.ok }
-            val desktopCommand = if (help.ok && help.output.contains("create-virtual-display")) {
-                execute("cmd display create-virtual-display SantosTeam-Dextop --width 1920 --height 1080 --density 240 --own-content-only")
-            } else null
-            val confirmed = settingsOk && (wm.ok || desktopCommand?.ok == true)
-                    && readback.ok
-            if (confirmed) {
-                Operation(true, "Modo desktop/DeX solicitado e confirmado pelo sistema. ${readback.stdout.trim()}")
-            } else {
-                val detail = listOf(
-                    "settings=${results.map { it.exitCode }}",
-                    "wm=${wm.exitCode}:${wm.stderr.ifBlank { wm.stdout }.trim()}",
-                    "virtual=${desktopCommand?.exitCode ?: -1}",
-                    "readback=${readback.stdout.trim()} ${readback.stderr.trim()}"
-                ).joinToString(" | ")
-                Operation(false, "Este firmware não confirmou o modo desktop/DeX; nenhuma ativação foi simulada. $detail")
+            val width = 1920
+            val height = 1080
+            val density = 240
+            val spec = "${width}x${height}/${density},should_show_system_decorations"
+            val current = execute("settings get global overlay_display_devices")
+            if (!current.ok) return@async failure("Não foi possível ler os displays virtuais", current)
+            val existing = current.stdout.trim().lineSequence().lastOrNull()?.trim().orEmpty()
+            val entries = existing.split(';').map { it.trim() }.filter { it.isNotEmpty() }
+            if (SANTOS_DEX_SPEC in entries) {
+                return@async Operation(true, "Modo desktop/DeX já está ativo; display Santos Team preservado.")
             }
+            val merged = (entries + spec).distinct().joinToString(";")
+            val shellValue = merged.replace("'", "'\\''")
+            val write = execute("settings put global overlay_display_devices '$shellValue'")
+            if (!write.ok) return@async failure("O Android recusou a criação do display virtual", write)
+            val readback = execute("settings get global overlay_display_devices")
+            val confirmed = readback.ok && readback.stdout.contains(spec)
+            if (!confirmed) {
+                val rollbackValue = existing.replace("'", "'\\''")
+                if (rollbackValue.isBlank()) execute("settings delete global overlay_display_devices")
+                else execute("settings put global overlay_display_devices '$rollbackValue'")
+                return@async Operation(false, "O display virtual não foi confirmado pelo Android; estado anterior restaurado.")
+            }
+            Operation(true, "Display virtual do Santos Team criado. Em Samsung compatível, o sistema assume a sessão DeX; ative a acessibilidade para interação.")
         }
     }
 
     @JvmStatic
     fun stopDesktopMode(context: Context, callback: Callback) {
         async(callback) {
-            val commands = listOf(
-                "settings delete global force_resizable_activities",
-                "settings delete global enable_freeform_support",
-                "settings delete global force_desktop_mode_on_external_displays",
-                "wm set-display-windowing-mode -d 0 1"
-            )
-            val results = commands.map { execute(it) }
-            if (results.all { it.ok }) Operation(true, "Modo desktop/DeX desativado e configurações temporárias removidas.")
-            else Operation(false, "O sistema recusou parte da restauração; verifique o log Shizuku: ${results.map { it.exitCode }}")
+            val current = execute("settings get global overlay_display_devices")
+            if (!current.ok) return@async failure("Não foi possível ler os displays virtuais para desligar o DeX", current)
+            val entries = current.stdout.trim().lineSequence().lastOrNull()?.trim().orEmpty()
+                .split(';').map { it.trim() }.filter { it.isNotEmpty() }
+            val remaining = entries.filterNot { it == SANTOS_DEX_SPEC || it.startsWith("1920x1080/240,should_show_system_decorations") }
+            val value = remaining.joinToString(";")
+            val write = if (value.isBlank()) execute("settings delete global overlay_display_devices")
+            else {
+                val shellValue = value.replace("'", "'\\''")
+                execute("settings put global overlay_display_devices '$shellValue'")
+            }
+            if (!write.ok) failure("O Android recusou o encerramento do display Santos Team", write)
+            else Operation(true, "Sessão DeX/display virtual do Santos Team encerrada; outros displays foram preservados.")
         }
     }
+
+    private const val SANTOS_DEX_SPEC = "1920x1080/240,should_show_system_decorations"
 
     @JvmStatic
     fun setCpuGovernor(context: Context, enabled: Boolean, callback: Callback) {

@@ -137,11 +137,27 @@ public class ResolutionSetupActivity extends Activity {
                 else { breventLaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(breventLaunch); serviceStatus.setText("Brevent: aberto · conclua a ativação nele"); }
             } catch (Throwable error) { serviceStatus.setText("Brevent: não foi possível abrir: " + error.getClass().getSimpleName()); }
         });
+        addAction(services, "ABRIR ACESSIBILIDADE DO SANTOS TEAM", v -> {
+            try {
+                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                serviceStatus.setText("Acessibilidade: ative Santos Team e volte para esta tela");
+            } catch (Throwable error) {
+                serviceStatus.setText("Acessibilidade: não foi possível abrir as configurações");
+            }
+        });
         addAction(services, "ATIVAR MODO DESKTOP / DEX", v -> {
-            serviceStatus.setText("DeX: verificando Shizuku e capacidades…");
+            if (!isSantosAccessibilityEnabled()) {
+                serviceStatus.setText("DeX: acessibilidade ainda não está ativada");
+                try { startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
+                catch (Throwable ignored) { Toast.makeText(this, "Abra Configurações > Acessibilidade e ative Santos Team.", Toast.LENGTH_LONG).show(); }
+                return;
+            }
+            serviceStatus.setText("DeX: verificando Shizuku e criando display virtual…");
             ShellManager.startDesktopMode(this, (ok, msg) -> runOnUiThread(() -> { serviceStatus.setText("DeX: " + msg); Toast.makeText(this, msg, Toast.LENGTH_LONG).show(); }));
         });
         addAction(services, "DESATIVAR MODO DESKTOP / DEX", v -> ShellManager.stopDesktopMode(this, (ok, msg) -> runOnUiThread(() -> { serviceStatus.setText("DeX: " + msg); Toast.makeText(this, msg, Toast.LENGTH_LONG).show(); })));
+        services.addView(text("ACESSIBILIDADE", 11, Ui.BRIGHT, true), height(34));
+        services.addView(text("Acessibilidade não liga o DeX sozinha: ela fornece a camada de interação/entrada. O display é criado pelo Shizuku e o Android/One UI decide se a sessão DeX é compatível.", 12, Ui.MUTED, false), height(78));
         services.addView(text("RENDERER DO JOGO", 11, Ui.BRIGHT, true), height(34));
         services.addView(text("As opções ficam no app, mas a troca de renderer de outro jogo só será aplicada quando o Android/ROM expuser uma API confirmável. Não será feita escrita global fictícia que possa travar o aparelho.", 12, Ui.MUTED, false), height(95));
         LinearLayout rendererRow = new LinearLayout(this); rendererRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -399,6 +415,15 @@ public class ResolutionSetupActivity extends Activity {
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
         if (requestCode == REQ_NOTIFICATIONS) startOverlay();
+    }
+
+    private boolean isSantosAccessibilityEnabled() {
+        try {
+            String enabled = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            return enabled != null && enabled.toLowerCase(java.util.Locale.ROOT).contains(getPackageName().toLowerCase(java.util.Locale.ROOT));
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private void startOverlay() {
