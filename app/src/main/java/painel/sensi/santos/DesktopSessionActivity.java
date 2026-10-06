@@ -21,13 +21,11 @@ import android.widget.TextView;
 
 import java.lang.ref.WeakReference;
 
-import android.hardware.input.IInputManager;
 import android.view.InputEvent;
-import android.view.InputDevice;
 import android.view.MotionEvent.PointerProperties;
 import android.view.MotionEvent.PointerCoords;
-import android.view.InputDevice;
-import android.hardware.input.InputManager;
+import android.os.IBinder;
+import android.os.Parcel;
 import rikka.shizuku.ShizukuBinderWrapper;
 import rikka.shizuku.SystemServiceHelper;
 
@@ -173,16 +171,33 @@ public final class DesktopSessionActivity extends Activity implements SurfaceHol
 
     /** Ponte de input usada somente para eventos produzidos pelo usuário nesta tela. */
     private static final class InputBridge {
-        private static IInputManager manager;
-        private static IInputManager manager() throws Exception {
+        private static IBinder manager;
+        private static IBinder manager() {
             if (manager == null) {
-                manager = IInputManager.Stub.asInterface(
-                        new ShizukuBinderWrapper(SystemServiceHelper.getSystemService(Context.INPUT_SERVICE)));
+                manager = new ShizukuBinderWrapper(SystemServiceHelper.getSystemService(Context.INPUT_SERVICE));
             }
             return manager;
         }
         static void inject(InputEvent event) throws Exception {
-            manager().injectInputEvent(event, InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
+            // IInputManager.injectInputEvent(InputEvent, int) é uma API
+            // hidden e não existe nos stubs do compileSdk. A transação AIDL
+            // permanece estável: código 1, evento parcelável e modo async 2.
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken("android.hardware.input.IInputManager");
+                data.writeInt(1);
+                event.writeToParcel(data, 0);
+                data.writeInt(2);
+                manager().transact(1, data, reply, 0);
+                reply.readException();
+                if (reply.dataAvail() > 0 && reply.readInt() == 0) {
+                    throw new SecurityException("Android recusou o evento de entrada");
+                }
+            } finally {
+                data.recycle();
+                reply.recycle();
+            }
         }
     }
 }
