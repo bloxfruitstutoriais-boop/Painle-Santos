@@ -152,10 +152,21 @@ public class ResolutionSetupActivity extends Activity {
                 catch (Throwable ignored) { Toast.makeText(this, "Abra Configurações > Acessibilidade e ative Santos Team.", Toast.LENGTH_LONG).show(); }
                 return;
             }
-            serviceStatus.setText("DeX: verificando Shizuku e criando display virtual…");
-            ShellManager.startDesktopMode(this, (ok, msg) -> runOnUiThread(() -> { serviceStatus.setText("DeX: " + msg); Toast.makeText(this, msg, Toast.LENGTH_LONG).show(); }));
+            serviceStatus.setText("DeX: abrindo sessão desktop visível…");
+            try {
+                startActivity(new Intent(this, DesktopSessionActivity.class));
+                serviceStatus.setText("DeX: sessão aberta; o launcher será carregado no display virtual");
+            } catch (Throwable error) {
+                serviceStatus.setText("DeX: não foi possível abrir a sessão: " + error.getClass().getSimpleName());
+            }
         });
-        addAction(services, "DESATIVAR MODO DESKTOP / DEX", v -> ShellManager.stopDesktopMode(this, (ok, msg) -> runOnUiThread(() -> { serviceStatus.setText("DeX: " + msg); Toast.makeText(this, msg, Toast.LENGTH_LONG).show(); })));
+        addAction(services, "DESATIVAR MODO DESKTOP / DEX", v -> {
+            DesktopSessionActivity.stopActive();
+            ShellManager.stopDesktopMode(this, (ok, msg) -> runOnUiThread(() -> {
+                serviceStatus.setText("DeX: " + msg);
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+            }));
+        });
         services.addView(text("ACESSIBILIDADE", 11, Ui.BRIGHT, true), height(34));
         services.addView(text("Acessibilidade não liga o DeX sozinha: ela fornece a camada de interação/entrada. O display é criado pelo Shizuku e o Android/One UI decide se a sessão DeX é compatível.", 12, Ui.MUTED, false), height(78));
         services.addView(text("RENDERER DO JOGO", 11, Ui.BRIGHT, true), height(34));

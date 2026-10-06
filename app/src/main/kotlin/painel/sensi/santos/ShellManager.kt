@@ -165,7 +165,7 @@ object ShellManager {
             if (SANTOS_DEX_SPEC in entries) {
                 val displayId = waitForOverlayDisplay(context)
                 if (displayId < 0) return@async Operation(false, "O display Santos Team está configurado, mas não foi publicado pelo Android.")
-                val home = launchHomeOnDisplay(displayId)
+                val home = launchHomeOnDisplayNow(displayId)
                 return@async if (home.ok) {
                     Operation(true, "Desktop/DeX já estava configurado e o launcher foi reaberto no display virtual $displayId.")
                 } else {
@@ -196,7 +196,7 @@ object ShellManager {
                 else execute("settings put global overlay_display_devices '$rollbackValue'")
                 return@async Operation(false, "O Android aceitou a configuração, mas não publicou o display virtual; estado anterior restaurado.")
             }
-            val home = launchHomeOnDisplay(displayId)
+            val home = launchHomeOnDisplayNow(displayId)
             if (!home.ok) {
                 val rollbackValue = existing.replace("'", "'\\''")
                 if (rollbackValue.isBlank()) execute("settings delete global overlay_display_devices")
@@ -220,7 +220,16 @@ object ShellManager {
         return -1
     }
 
-    private fun launchHomeOnDisplay(displayId: Int): CommandResult {
+    @JvmStatic
+    fun launchHomeOnDisplay(context: Context, displayId: Int, callback: Callback) {
+        async(callback) {
+            val result = launchHomeOnDisplayNow(displayId)
+            if (result.ok) Operation(true, "Launcher aberto no display virtual $displayId")
+            else failure("Launcher não pôde ser aberto no display $displayId", result)
+        }
+    }
+
+    private fun launchHomeOnDisplayNow(displayId: Int): CommandResult {
         if (displayId < 0) return CommandResult(false, "display id inválido")
         // O comando é constante, exceto pelo ID obtido diretamente do
         // DisplayManager; nenhum texto fornecido pelo usuário é incorporado.
