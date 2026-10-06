@@ -163,7 +163,14 @@ object ShellManager {
             val existing = current.stdout.trim().lineSequence().lastOrNull()?.trim().orEmpty()
             val entries = existing.split(';').map { it.trim() }.filter { it.isNotEmpty() }
             if (SANTOS_DEX_SPEC in entries) {
-                return@async Operation(true, "Modo desktop/DeX já está ativo; display Santos Team preservado.")
+                val displayId = waitForOverlayDisplay(context)
+                if (displayId < 0) return@async Operation(false, "O display Santos Team está configurado, mas não foi publicado pelo Android.")
+                val home = launchHomeOnDisplay(displayId)
+                return@async if (home.ok) {
+                    Operation(true, "Desktop/DeX já estava configurado e o launcher foi reaberto no display virtual $displayId.")
+                } else {
+                    failure("Não foi possível reabrir o launcher no display $displayId", home)
+                }
             }
             val merged = (entries + spec).distinct().joinToString(";")
             val shellValue = merged.replace("'", "'\\''")
@@ -177,8 +184,51 @@ object ShellManager {
                 else execute("settings put global overlay_display_devices '$rollbackValue'")
                 return@async Operation(false, "O display virtual não foi confirmado pelo Android; estado anterior restaurado.")
             }
-            Operation(true, "Display virtual do Santos Team criado. Em Samsung compatível, o sistema assume a sessão DeX; ative a acessibilidade para interação.")
+
+            // A configuração global apenas solicita o display. O Android só o
+            // torna utilizável depois de o publicar no DisplayManager. Em
+            // seguida, abrimos o HOME explicitamente nesse display; sem esta
+            // etapa o usuário vê apenas a tela normal e nenhum desktop.
+            val displayId = waitForOverlayDisplay(context)
+            if (displayId < 0) {
+                val rollbackValue = existing.replace("'", "'\\''")
+                if (rollbackValue.isBlank()) execute("settings delete global overlay_display_devices")
+                else execute("settings put global overlay_display_devices '$rollbackValue'")
+                return@async Operation(false, "O Android aceitou a configuração, mas não publicou o display virtual; estado anterior restaurado.")
+            }
+            val home = launchHomeOnDisplay(displayId)
+            if (!home.ok) {
+                val rollbackValue = existing.replace("'", "'\\''")
+                if (rollbackValue.isBlank()) execute("settings delete global overlay_display_devices")
+                else execute("settings put global overlay_display_devices '$rollbackValue'")
+                return@async failure("Display criado, mas o launcher não pôde ser aberto no display $displayId", home)
+            }
+            Operation(true, "Desktop/DeX iniciado no display virtual $displayId. O launcher foi aberto automaticamente; a acessibilidade fornece a camada de interação.")
         }
+    }
+
+    private fun waitForOverlayDisplay(context: Context): Int {
+        val manager = context.getSystemService(DisplayManager::class.java) ?: return -1
+        repeat(30) {
+            val display = manager.displays.firstOrNull { candidate ->
+                candidate.displayId != android.view.Display.DEFAULT_DISPLAY &&
+                    runCatching { candidate.type == android.view.Display.TYPE_OVERLAY }.getOrDefault(false)
+            }
+            if (display != null) return display.displayId
+            try { Thread.sleep(100L) } catch (_: InterruptedException) { return -1 }
+        }
+        return -1
+    }
+
+    private fun launchHomeOnDisplay(displayId: Int): CommandResult {
+        if (displayId < 0) return CommandResult(false, "display id inválido")
+        // O comando é constante, exceto pelo ID obtido diretamente do
+        // DisplayManager; nenhum texto fornecido pelo usuário é incorporado.
+        return execute(
+            "am start --display $displayId " +
+                "--activity-multiple-task --activity-reset-task-if-needed " +
+                "-a android.intent.action.MAIN -c android.intent.category.HOME"
+        )
     }
 
     @JvmStatic
