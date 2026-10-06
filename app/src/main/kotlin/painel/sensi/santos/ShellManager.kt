@@ -212,7 +212,7 @@ object ShellManager {
         repeat(30) {
             val display = manager.displays.firstOrNull { candidate ->
                 candidate.displayId != android.view.Display.DEFAULT_DISPLAY &&
-                    runCatching { candidate.type == android.view.Display.TYPE_OVERLAY }.getOrDefault(false)
+                    runCatching { android.view.Display::class.java.getMethod("getType").invoke(candidate) as Int == 4 }.getOrDefault(false)
             }
             if (display != null) return display.displayId
             try { Thread.sleep(100L) } catch (_: InterruptedException) { return -1 }
