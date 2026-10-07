@@ -270,15 +270,30 @@ object ShellManager {
                 val transaction = SurfaceControl.Transaction()
                 transaction.reparent(layer, hostControl)
                 transaction.setLayer(layer, 1)
-                transaction.setMatrix(
+                SurfaceControl.Transaction::class.java.getMethod(
+                    "setMatrix",
+                    SurfaceControl::class.java,
+                    Float::class.javaPrimitiveType,
+                    Float::class.javaPrimitiveType,
+                    Float::class.javaPrimitiveType,
+                    Float::class.javaPrimitiveType
+                ).invoke(
+                    transaction,
                     layer,
                     host.width.toFloat() / 1920f,
                     0f,
                     0f,
                     host.height.toFloat() / 1080f
                 )
-                transaction.setWindowCrop(layer, 1920, 1080)
-                transaction.show(layer)
+                SurfaceControl.Transaction::class.java.getMethod(
+                    "setWindowCrop",
+                    SurfaceControl::class.java,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType
+                ).invoke(transaction, layer, 1920, 1080)
+                SurfaceControl.Transaction::class.java.getMethod(
+                    "show", SurfaceControl::class.java
+                ).invoke(transaction, layer)
                 transaction.apply()
                 mirrorLayer?.runCatching { release() }
                 mirrorLayer = layer
