@@ -6,8 +6,11 @@ import android.hardware.display.DisplayManager
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
+import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
+import android.view.SurfaceControl
+import android.view.SurfaceView
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope // CORRIGIDO BUG1: shell usa coroutine em vez de executor de thread.
 import kotlinx.coroutines.Dispatchers // CORRIGIDO BUG1: garante execução dos comandos em IO.
@@ -51,6 +54,7 @@ object ShellManager {
     private val mainHandler = Handler(Looper.getMainLooper()) // CORRIGIDO BUG1: callback visual volta para a Main Looper.
     private const val TAG = "ShellManager"
     private const val FLOW_TAG = "DEBUG_FLOW"
+    private var mirrorLayer: SurfaceControl? = null
 
     private val CPU_GOVERNOR_PATHS = arrayOf(
         "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
@@ -238,6 +242,61 @@ object ShellManager {
                 "--activity-multiple-task --activity-reset-task-if-needed " +
                 "-a android.intent.action.MAIN -c android.intent.category.HOME"
         )
+    }
+
+    /**
+     * Mirrors the already-created overlay display into the phone-side host.
+     * Dextop does not create a second public VirtualDisplay for this: it asks
+     * WindowManager to mirror the overlay and reparents that layer to the host
+     * SurfaceControl. This is what makes the desktop visible instead of black.
+     */
+    @JvmStatic
+    fun attachDesktopMirror(displayId: Int, host: SurfaceView, callback: Callback) {
+        async(callback) {
+            val result = runCatching {
+                val hostControl = SurfaceView::class.java
+                    .getMethod("getSurfaceControl").invoke(host) as SurfaceControl
+                val layer = SurfaceControl::class.java.getConstructor().newInstance()
+                val wrapper = rikka.shizuku.ShizukuBinderWrapper(
+                    rikka.shizuku.SystemServiceHelper.getSystemService("window")
+                )
+                val stub = Class.forName("android.view.IWindowManager\$Stub")
+                val service = stub.getMethod("asInterface", IBinder::class.java)
+                    .invoke(null, wrapper)
+                val mirror = Class.forName("android.view.IWindowManager").getMethod(
+                    "mirrorDisplay", Int::class.javaPrimitiveType, SurfaceControl::class.java
+                ).invoke(service, displayId, layer) as Boolean
+                check(mirror) { "WindowManager recusou o espelhamento do display" }
+                val transaction = SurfaceControl.Transaction()
+                transaction.reparent(layer, hostControl)
+                transaction.setLayer(layer, 1)
+                transaction.setMatrix(
+                    layer,
+                    host.width.toFloat() / 1920f,
+                    0f,
+                    0f,
+                    host.height.toFloat() / 1080f
+                )
+                transaction.setWindowCrop(layer, 1920, 1080)
+                transaction.show(layer)
+                transaction.apply()
+                mirrorLayer?.runCatching { release() }
+                mirrorLayer = layer
+                "Espelhamento SurfaceControl ativo no display $displayId"
+            }.getOrElse { error ->
+                throw IllegalStateException(
+                    "Não foi possível espelhar o display real: ${error.message ?: error.javaClass.simpleName}",
+                    error
+                )
+            }
+            Operation(true, result)
+        }
+    }
+
+    @JvmStatic
+    fun releaseDesktopMirror() {
+        runCatching { mirrorLayer?.release() }
+        mirrorLayer = null
     }
 
     @JvmStatic

@@ -1,16 +1,10 @@
 package painel.sensi.santos;
 
 import android.app.Activity;
-import android.content.Context;
 import android.graphics.Color;
-import android.hardware.display.DisplayManager;
-import android.hardware.display.VirtualDisplay;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.view.Gravity;
 import android.view.MotionEvent;
-import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
@@ -21,33 +15,16 @@ import android.widget.TextView;
 
 import java.lang.ref.WeakReference;
 
-import android.view.InputEvent;
-import android.view.MotionEvent.PointerProperties;
-import android.view.MotionEvent.PointerCoords;
-import android.os.IBinder;
-import android.os.Parcel;
-import rikka.shizuku.ShizukuBinderWrapper;
-import rikka.shizuku.SystemServiceHelper;
-
 /**
- * Sessão visual do Santos Team. Diferente do fluxo antigo, o display tem uma
- * Surface própria anexada à tela do telefone; por isso o HOME não fica preso
- * em um display virtual invisível.
+ * Hospeda o espelho do display overlay real. Não cria um segundo
+ * VirtualDisplay: o display é solicitado pelo Shizuku e o WindowManager é
+ * usado para anexá-lo à SurfaceView, como no Dextop.
  */
 public final class DesktopSessionActivity extends Activity implements SurfaceHolder.Callback {
-    private static final int DESKTOP_WIDTH = 1920;
-    private static final int DESKTOP_HEIGHT = 1080;
-    private static final int DESKTOP_DENSITY = 240;
     private static WeakReference<DesktopSessionActivity> active = new WeakReference<>(null);
-
-    private FrameLayout root;
     private SurfaceView surfaceView;
     private TextView status;
-    private VirtualDisplay virtualDisplay;
     private int displayId = -1;
-    private float downX;
-    private float downY;
-    private long downTime;
     private boolean closing;
 
     public static void stopActive() {
@@ -62,7 +39,8 @@ public final class DesktopSessionActivity extends Activity implements SurfaceHol
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
         window.setNavigationBarColor(Color.BLACK);
-        root = new FrameLayout(this);
+
+        FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
         surfaceView = new SurfaceView(this);
         surfaceView.getHolder().addCallback(this);
@@ -75,125 +53,114 @@ public final class DesktopSessionActivity extends Activity implements SurfaceHol
         status.setGravity(Gravity.CENTER);
         status.setPadding(18, 10, 18, 10);
         status.setBackgroundColor(0xB0000000);
-        status.setText("Santos Team · preparando desktop…");
-        FrameLayout.LayoutParams statusParams = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        status.setText("Santos Team · criando display desktop…");
+        FrameLayout.LayoutParams statusParams = new FrameLayout.LayoutParams(-2, -2,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         statusParams.topMargin = 18;
         root.addView(status, statusParams);
         setContentView(root);
     }
 
     @Override public void surfaceCreated(SurfaceHolder holder) {
-        startVirtualDesktop(holder.getSurface());
+        status.setText("Santos Team · solicitando display overlay ao Android…");
+        ShellManager.startDesktopMode(this, (ok, message) -> runOnUiThread(() -> {
+            if (closing) return;
+            if (!ok) {
+                showError("Desktop não foi criado: " + message);
+                return;
+            }
+            displayId = readNewestOverlayDisplay();
+            if (displayId < 0) {
+                showError("O Android não publicou o display overlay criado");
+                return;
+            }
+            status.setText("Desktop publicado · espelhando display " + displayId + "…");
+            ShellManager.attachDesktopMirror(displayId, surfaceView, (mirrorOk, mirrorMessage) ->
+                    runOnUiThread(() -> {
+                        if (closing) return;
+                        if (mirrorOk) {
+                            status.setVisibility(View.GONE);
+                        } else {
+                            showError(mirrorMessage);
+                            ShellManager.stopDesktopMode(this, (ignored, ignoredMessage) -> { });
+                        }
+                    }));
+        }));
     }
 
     @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) { }
 
     @Override public void surfaceDestroyed(SurfaceHolder holder) {
-        releaseDisplay();
+        ShellManager.releaseDesktopMirror();
     }
 
-    private void startVirtualDesktop(Surface surface) {
-        if (virtualDisplay != null || surface == null) return;
-        try {
-            DisplayManager manager = (DisplayManager) getSystemService(DISPLAY_SERVICE);
-            // PRESENTATION é o mesmo caminho usado pelo exemplo público
-            // SimpleVirtualDisplay; o conteúdo é renderizado na SurfaceView.
-            virtualDisplay = manager.createVirtualDisplay(
-                    "Santos Team Desktop",
-                    DESKTOP_WIDTH,
-                    DESKTOP_HEIGHT,
-                    DESKTOP_DENSITY,
-                    surface,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
-            );
-            if (virtualDisplay == null || virtualDisplay.getDisplay() == null) {
-                fail("Android não criou o display virtual");
-                return;
-            }
-            displayId = virtualDisplay.getDisplay().getDisplayId();
-            status.setText("Desktop Santos Team · display " + displayId + " · abrindo launcher…");
-            ShellManager.launchHomeOnDisplay(this, displayId, (ok, message) -> runOnUiThread(() -> {
-                if (closing) return;
-                status.setText(ok
-                        ? "Desktop ativo · toque direto / trackpad · display " + displayId
-                        : "Desktop criado, mas o launcher falhou: " + message);
-                status.setVisibility(ok ? View.GONE : View.VISIBLE);
-            }));
-        } catch (Throwable error) {
-            fail("Falha ao criar sessão: " + error.getClass().getSimpleName());
+    private int readNewestOverlayDisplay() {
+        android.hardware.display.DisplayManager manager =
+                (android.hardware.display.DisplayManager) getSystemService(DISPLAY_SERVICE);
+        if (manager == null) return -1;
+        int result = -1;
+        for (android.view.Display display : manager.getDisplays()) {
+            if (display.getDisplayId() == android.view.Display.DEFAULT_DISPLAY) continue;
+            boolean overlay = false;
+            try {
+                overlay = ((Integer) android.view.Display.class.getMethod("getType")
+                        .invoke(display)) == 4;
+            } catch (Throwable ignored) { }
+            if (overlay) result = display.getDisplayId();
         }
+        return result;
     }
 
     private boolean forwardTouch(MotionEvent original) {
         if (displayId < 0) return true;
         try {
             MotionEvent event = MotionEvent.obtain(original);
-            float sx = DESKTOP_WIDTH / (float) Math.max(1, surfaceView.getWidth());
-            float sy = DESKTOP_HEIGHT / (float) Math.max(1, surfaceView.getHeight());
+            float sx = 1920f / Math.max(1, surfaceView.getWidth());
+            float sy = 1080f / Math.max(1, surfaceView.getHeight());
             event.setLocation(event.getX() * sx, event.getY() * sy);
-            try {
-                MotionEvent.class.getMethod("setDisplayId", int.class).invoke(event, displayId);
-            } catch (Throwable ignored) { }
-            if (original.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                downX = original.getX(); downY = original.getY(); downTime = System.currentTimeMillis();
-            }
+            MotionEvent.class.getMethod("setDisplayId", int.class).invoke(event, displayId);
             InputBridge.inject(event);
             event.recycle();
-            return true;
         } catch (Throwable error) {
-            status.setText("Entrada indisponível: autorize o Santos Team no Shizuku");
-            status.setVisibility(View.VISIBLE);
-            return true;
+            showError("Entrada recusada pelo Android/Shizuku: " + error.getClass().getSimpleName());
         }
+        return true;
     }
 
-    private void fail(String message) {
+    private void showError(String message) {
         if (status != null) {
             status.setText(message);
             status.setVisibility(View.VISIBLE);
         }
     }
 
-    private void releaseDisplay() {
-        if (virtualDisplay != null) {
-            try { virtualDisplay.release(); } catch (Throwable ignored) { }
-            virtualDisplay = null;
-        }
-        displayId = -1;
-    }
-
     @Override protected void onDestroy() {
         closing = true;
-        releaseDisplay();
+        ShellManager.releaseDesktopMirror();
+        ShellManager.stopDesktopMode(this, (ignored, ignoredMessage) -> { });
         if (active.get() == this) active.clear();
         super.onDestroy();
     }
 
-    /** Ponte de input usada somente para eventos produzidos pelo usuário nesta tela. */
     private static final class InputBridge {
-        private static IBinder manager;
-        private static IBinder manager() {
+        private static android.os.IBinder manager;
+        private static android.os.IBinder manager() {
             if (manager == null) {
-                manager = new ShizukuBinderWrapper(SystemServiceHelper.getSystemService(Context.INPUT_SERVICE));
+                manager = new rikka.shizuku.ShizukuBinderWrapper(
+                        rikka.shizuku.SystemServiceHelper.getSystemService("input"));
             }
             return manager;
         }
-        static void inject(InputEvent event) throws Exception {
-            // IInputManager.injectInputEvent(InputEvent, int) é uma API
-            // hidden e não existe nos stubs do compileSdk. A transação AIDL
-            // permanece estável: código 1, evento parcelável e modo async 2.
-            Parcel data = Parcel.obtain();
-            Parcel reply = Parcel.obtain();
+        static void inject(android.view.InputEvent event) throws Exception {
+            android.os.Parcel data = android.os.Parcel.obtain();
+            android.os.Parcel reply = android.os.Parcel.obtain();
             try {
                 data.writeInterfaceToken("android.hardware.input.IInputManager");
                 data.writeInt(1);
                 event.writeToParcel(data, 0);
-                data.writeInt(2);
+                data.writeInt(1);
                 manager().transact(1, data, reply, 0);
                 reply.readException();
-                if (reply.dataAvail() > 0 && reply.readInt() == 0) {
-                    throw new SecurityException("Android recusou o evento de entrada");
-                }
             } finally {
                 data.recycle();
                 reply.recycle();
